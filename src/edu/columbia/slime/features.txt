@@ -1,0 +1,5 @@
+1. Easy add-on, failover
+2. Easy configuration
+3. Abstracted service framework provisioning
+4. Automatic client launch, kill (though Jsch)
+5. Dynamic control (through Jersey https://jersey.java.net/documentation/latest/getting-started.html)

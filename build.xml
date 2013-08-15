@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<project name="Slime" default="build" basedir=".">
+ <tstamp/>
+  <property name="SRCDIR" location="src"/>
+  <property name="ENVDIR" location="env"/>
+  <property name="CONFDIR" location="conf"/>
+  <property name="TOOLDIR" location="tools"/>
+  <property name="BUILDDIR" location="build"/>
+  <property name="test" location="test"/>
+  <property name="DISTDIR" location="dist"/>
+  <property name="DOCSDIR" location="docs"/>
+  <property name="LIBDIR" location="lib"/>
+
+  <target name="build" depends="checkstyle" description="build Slime source code">
+    <mkdir dir="${BUILDDIR}"/>
+    <javac srcdir="${SRCDIR}" destdir="${BUILDDIR}" debug="on" debuglevel="lines,vars,source" includeantruntime="fasle">
+      <compilerarg value="-Xlint"/> 
+      <classpath>
+        <pathelement path="${classpath}"/>
+        <fileset dir="${LIBDIR}">
+          <include name="**/*.jar"/>
+        </fileset>
+      </classpath>
+    </javac>
+
+    <symlink link="${BUILDDIR}/conf" resource="${CONFDIR}"/>
+
+    <copy todir="${BUILDDIR}">
+      <fileset dir="${ENVDIR}"/>
+    </copy>
+
+    <!--antcall target="checkstyle"/-->
+    <mkdir dir="${DISTDIR}"/>
+    <jar jarfile="${DISTDIR}/slime-1.0-${DSTAMP}.jar">
+      <fileset dir="${BUILDDIR}/"/>
+    </jar>
+  </target>
+
+  <taskdef resource="checkstyletask.properties" classpath="${TOOLDIR}/checkstyle-5.5-all.jar" />
+  <target name="checkstyle" description="Generates a report of code convention violations.">
+    <checkstyle config="${DOCSDIR}/sun_checks.xml">
+      <fileset dir="${SRCDIR}" includes="**/*.java" /> <!--excludes="edu/columbia/mipl/syntax/*.java"/-->
+      <formatter type="plain"/>
+    </checkstyle>
+  </target>
+
+  <target name="clean">
+    <symlink action="delete" link="${BUILDDIR}/conf"/>
+    <delete dir="${DISTDIR}"/>
+    <delete dir="${BUILDDIR}"/>
+  </target>
+</project>
