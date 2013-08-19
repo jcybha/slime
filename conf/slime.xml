@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<slime>
+ <configuration>
+  <threads>3</threads>
+  <directories>
+   <base>dist:lib:bin:plugins</base>
+   <dist>slime</dist>
+   <plugins>plugins</plugins>
+  </directories>
+
+  <servers>
+   <server>128.59.14.28</server>
+   <server threads="2" user="" passwd="">128.59.14.24</server>
+  </servers>
+
+  <services>
+   <service name="deploy">
+    <port>2033</port>
+   </service>
+   <service name="ui">
+  </service>
+  <service name="manage">
+    <port>2034</port>
+   </service>
+  </services>
+ </configuration>
+</slime>
