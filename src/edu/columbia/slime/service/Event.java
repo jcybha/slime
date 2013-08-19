@@ -11,5 +11,7 @@ import edu.columbia.slime.Slime;
 public abstract class Event {
         public abstract void registerEvent(EventListFeeder elf, Selector selector);
 
+        public abstract void unregisterEvent(EventListFeeder elf, Selector selector);
+
         public abstract void cancelEvent(EventListFeeder elf);
 }

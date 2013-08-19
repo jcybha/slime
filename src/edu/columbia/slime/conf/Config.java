@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.util.Stack;
 import java.util.Map;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import javax.xml.parsers.SAXParser;
 
 import org.apache.commons.logging.Log;
@@ -20,36 +21,51 @@ import edu.columbia.slime.util.Network;
 import edu.columbia.slime.service.Service;
 
 @SuppressWarnings("serial")
-public class Config extends HashMap<String, String> {
+public class Config extends HashMap<String, Object> {
 	public static final Log LOG = LogFactory.getLog(Slime.class);
 
 	private static final String configPath = "conf/slime.xml";
+
+	public static final String ELEMENT_NAME_SERVER = "server";
+	public static final String ELEMENT_NAME_SERVICE = "service";
+	public static final String ELEMENT_NAME_BASE = "base";
+	public static final String ELEMENT_NAME_DIST = "dist";
+
+	public static final String ATTR_NAME_USER = "user";
+
+	private Map<String, String> thisServer;
 
 	public class ConfigParser extends DefaultHandler {
 		private static final String ELEMENT_NAME_SLIME = "slime";
 		private static final String ELEMENT_NAME_CONFIG = "configuration";
 		private static final String ELEMENT_NAME_THREADS = "threads";
 		private static final String ELEMENT_NAME_DIRS = "directories";
-		private static final String ELEMENT_NAME_BASE = "base";
-		private static final String ELEMENT_NAME_DIST = "dist";
 		private static final String ELEMENT_NAME_PLUGINS = "plugins";
 		private static final String ELEMENT_NAME_SERVERS = "servers";
-		private static final String ELEMENT_NAME_SERVER = "server";
 		private static final String ELEMENT_NAME_SERVICES = "services";
-		private static final String ELEMENT_NAME_SERVICE = "service";
 
 		private static final String ATTR_NAME_NAME = "name";
 		private static final String ATTR_NAME_THREADS = "threads";
 
 		private Stack<String> elementStack = new Stack<String>();
-		private String attrThreads = null;
 
 		private ServiceConfigParser serviceParser = null;
 
-		Map<String, String> map;
+		Map<String, Object> map;
+		String currentCharacters = "";
+		Attributes currentAttr = null;
 
-		ConfigParser(Map<String, String> map) {
+		ConfigParser(Map<String, Object> map) {
 			this.map = map;
+		}
+
+		protected Map<String, String> convertToMap(Attributes attr) {
+			int length = attr.getLength();
+			Map<String, String> map = new HashMap<String, String>();
+			for (int i = 0; i < length; i++) {
+				map.put(attr.getQName(i), attr.getValue(i));
+			}
+			return map;
 		}
 
 		public void startElement(String uri, String localName, String qName, Attributes attributes)
@@ -73,13 +89,12 @@ public class Config extends HashMap<String, String> {
 			if (elementStack.empty() && !ELEMENT_NAME_SLIME.equals(qName))
 				throw new SAXException("A Slime configuration file should begin with an element named 'slime'");
 
-			if (ELEMENT_NAME_SERVER.equals(qName)) {
-				attrThreads = attributes.getValue(ATTR_NAME_THREADS);
-			}
-
 			elementStack.push(qName);
+			currentCharacters = "";
+			currentAttr = attributes;
 		}
 
+		@SuppressWarnings("unchecked")
 		public void endElement(String uri, String localName, String qName)
 			throws SAXException {
 			if (serviceParser != null) {
@@ -91,8 +106,28 @@ public class Config extends HashMap<String, String> {
 				return;
 			}
 
-			if (elementStack.empty() || !elementStack.pop().equals(qName))
+			if (elementStack.empty() || !elementStack.peek().equals(qName))
 				throw new SAXException("Unmatched closing element: " + qName);
+
+			String startElement = elementStack.pop();
+
+			if (startElement.equals(ELEMENT_NAME_SERVER)) {
+				Map<String, Map<String, String>> servers = (Map<String, Map<String, String>>) map.get(ELEMENT_NAME_SERVER);
+				if (servers == null) {
+					servers = new LinkedHashMap<String, Map<String, String>>();
+					map.put(ELEMENT_NAME_SERVER, servers);
+				}
+
+				Map<String, String> attrMap = convertToMap(currentAttr);
+				if (Network.checkIfMyAddress(currentCharacters))
+					thisServer = attrMap;
+				servers.put(currentCharacters, attrMap);
+			}
+			else {
+				map.put(qName, currentCharacters);
+			}
+			currentCharacters = "";
+			currentAttr = null;
 		}
 
 		public void characters(char ch[], int start, int length)
@@ -105,29 +140,24 @@ public class Config extends HashMap<String, String> {
 				return;
 			}
 
-			String newString = new String(ch, start, length);
-
-			if (elementStack.peek().equals(ELEMENT_NAME_THREADS)) {
-				if (map.get(ELEMENT_NAME_THREADS) == null)
-					map.put(ELEMENT_NAME_THREADS, newString);
-			}
-			else if (elementStack.peek().equals(ELEMENT_NAME_BASE))
-				map.put(ELEMENT_NAME_BASE, newString);
-			else if (elementStack.peek().equals(ELEMENT_NAME_DIST))
-				map.put(ELEMENT_NAME_DIST, newString);
-			else if (elementStack.peek().equals(ELEMENT_NAME_PLUGINS))
-				map.put(ELEMENT_NAME_PLUGINS, newString);
-			else if (elementStack.peek().equals(ELEMENT_NAME_SERVER)) {
-				String exist = map.get(ELEMENT_NAME_SERVERS);
-				if (exist == null)
-					exist = newString;
-				else
-					exist = exist + ";" + newString;
-				map.put(ELEMENT_NAME_SERVERS, exist);
-				if (Network.checkIfMyAddress(newString) && attrThreads != null)
-					map.put(ELEMENT_NAME_THREADS, attrThreads);
-			}
+			currentCharacters += new String(ch, start, length);
 		}
+	}
+
+	public String get(String key) {
+		if (key.equals(ELEMENT_NAME_SERVER))
+			throw new RuntimeException("Call getServerInfo() method instead");
+
+		return (String) super.get(key);
+	}
+
+	@SuppressWarnings("unchecked")
+	public Map<String, Map<String, String>> getServerInfo() {
+		return (Map<String, Map<String, String>>) super.get(ELEMENT_NAME_SERVER);
+	}
+
+	public Map<String, String> getThisServerInfo() {
+		return thisServer;
 	}
 
 	public Config() {
@@ -135,7 +165,7 @@ public class Config extends HashMap<String, String> {
 	}
 
 	public Config(String configPath) {
-		InputStream is = Config.class.getResourceAsStream(configPath);
+		InputStream is = getClass().getResourceAsStream("/" + configPath);
 		if (is == null) {
 			try {
 				is = new FileInputStream(configPath);

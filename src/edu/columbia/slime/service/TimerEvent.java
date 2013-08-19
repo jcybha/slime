@@ -54,6 +54,10 @@ public class TimerEvent extends Event {
                 c.add(this);
         }
 
+	public void unregisterEvent(EventListFeeder elf, Selector selector) {
+                elf.getTimerEventList().remove(this);
+	}
+		
         public void cancelEvent(EventListFeeder elf) {
                 elf.getTimerEventList().remove(this);
         }

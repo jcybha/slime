@@ -20,22 +20,16 @@ public abstract class Service implements Closeable {
 
 	ServiceConfigParser parser = null;
 
-	Queue<Message> messageQueue = new LinkedList<Message>();
-
 	public void register(Event e) {
 		Slime.getInstance().registerEvent(e, this);
 	}
 
-	public void putMessage(Message message) {
-		synchronized (messageQueue) {
-			messageQueue.offer(message);
-		}
+	public void unregister(Event e) {
+		Slime.getInstance().unregisterEvent(e);
 	}
 
-	public Message getMessage() {
-		synchronized (messageQueue) {
-			return messageQueue.poll();
-		}
+	public void cancel(Event e) {
+		Slime.getInstance().cancelEvent(e);
 	}
 
 	public abstract String getName();

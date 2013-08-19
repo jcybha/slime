@@ -23,6 +23,7 @@
       </classpath>
     </javac>
 
+    <symlink action="delete" link="${BUILDDIR}/conf" failonerror="false"/>
     <symlink link="${BUILDDIR}/conf" resource="${CONFDIR}"/>
 
     <copy todir="${BUILDDIR}">

@@ -14,7 +14,7 @@ import org.apache.commons.logging.LogFactory;
 
 import edu.columbia.slime.Slime;
 
-public abstract class BasicNetworkService extends Service {
+public abstract class MasterSlaveService extends Service {
 	private static final String ATTR_NAME_PORT = "port";
 	SocketEvent se;
 	ServerSocketChannel ssc;
@@ -24,20 +24,58 @@ public abstract class BasicNetworkService extends Service {
 
 	protected Queue<SocketChannel> clientSockets = new LinkedList<SocketChannel>();
 
-	public final void init() throws IOException {
+	private final void initMaster() throws IOException {
 		ssc = ServerSocketChannel.open();
 		ssc.socket().bind(new InetSocketAddress(port));
 		ssc.configureBlocking(false);
-		LOG.info("Created a BasicNet service'" + getName() + "' at port " + port);
+		LOG.info("Created a [master] service'" + getName() + "' at port " + port);
 
 		se = new SocketEvent(ssc);
 		register(se);
 	}
 
-	public final void close() throws IOException {
+	private final void closeMaster() throws IOException {
 		cancel(se);
 
 		ssc.close();
+	}
+
+	private final void initSlave() throws IOException {
+		sc = SocketChannel.open();
+		sc.socket().connect(new InetSocketAddress(Slime.getInstance().getConfig().get("master"), port));
+		sc.configureBlocking(false);
+		sc.socket().setTcpNoDelay(true);
+		LOG.info("Created a [slave] service '" + getName() + "' connected to port " + port);
+		sc.write(java.nio.ByteBuffer.wrap("Hello".getBytes()));
+
+		se = new SocketEvent(sc);
+		register(se);
+	}
+
+	private final void closeSlave() throws IOException {
+		cancel(se);
+
+		sc.close();
+	}
+
+	public final void init() throws IOException {
+		try {
+			if (getDefaultConfig() == null || getDefaultConfig().get(ATTR_NAME_PORT) == null) {
+				LOG.error("Cannot find 'port' attribute for the service '" + getName());
+				throw new IOException("Cannot find 'port' attribute for the service '" + getName());
+			}
+			port = Integer.parseInt(getDefaultConfig().get(ATTR_NAME_PORT));
+		} catch (Exception e) {
+			LOG.error("Error initializing the service " + getName());
+			e.printStackTrace();
+			throw new IOException(e);
+		}
+		if (Slime.isMaster()) {
+			initMaster();
+		}
+		else {
+			initSlave();
+		}
 	}
 
 	public final void dispatch(Event e) throws IOException {
@@ -71,4 +109,14 @@ public abstract class BasicNetworkService extends Service {
 	}
 
 	public abstract void read(SocketChannel sc) throws IOException;
+
+	/* inherited from Closeable */
+	public void close() throws IOException {
+		if (Slime.isMaster()) {
+			closeMaster();
+		}
+		else {
+			closeSlave();
+		}
+	}
 }
