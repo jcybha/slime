@@ -9,11 +9,13 @@ import java.util.TreeSet;
 import java.util.Set;
 import java.util.Comparator;
 import java.util.Queue;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.Iterator;
 import java.util.Collection;
 import java.util.NoSuchElementException;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.nio.channels.Selector;
 import java.nio.channels.SelectionKey;
@@ -26,12 +28,15 @@ import edu.columbia.slime.service.*;
 import edu.columbia.slime.service.core.*;
 import edu.columbia.slime.proto.*;
 import edu.columbia.slime.conf.Config;
+import edu.columbia.slime.util.ClassUtils;
+import edu.columbia.slime.util.PairList;
 
 public class Slime implements EventListFeeder {
         public static final Log LOG = LogFactory.getLog(Slime.class);
 
 	private static final Slime instance = new Slime();
 	private static final int DEFAULT_SLEEP_MILLIS = 500;
+	private static final int DEFAULT_LONG_SLEEP_MILLIS = 50000;
 	private static Config config = null;
 
 	protected volatile boolean stopRequest = false;
@@ -42,23 +47,10 @@ public class Slime implements EventListFeeder {
 	Queue<MessageEvent> messages;
 	SortedSet<TimerEvent> timers;
 	Map<Event, Service> eventTable;
-
-	class Dispatch {
-		Event e;
-		Service s;
-		
-		Dispatch(Event e, Service s) { this.e = e; this.s = s; }
-		void execute() {
-			try {
-				s.dispatch(e);
-			} catch (IOException ioe) {
-				LOG.error("Error while dispatching : " + ioe);
-			}
-		}
-	}
-
-	List<Dispatch> dispatchQueue;
+	PairList<SocketChannel, ByteBuffer> sendQueue;
+	PairList<Event, Service> dispatchQueue;
 	Map<String, Service> services;
+	List<Runnable> runQueue;
 
 	protected Slime() {
 		sockets = new ArrayList<SocketEvent>();
@@ -75,8 +67,10 @@ public class Slime implements EventListFeeder {
 		} catch (IOException ioe) {
 		}
 
-		dispatchQueue = new ArrayList<Dispatch>();
+		dispatchQueue = new PairList<Event, Service>();
 		services = new HashMap<String, Service>();
+		sendQueue = new PairList<SocketChannel, ByteBuffer>();
+		runQueue = new ArrayList<Runnable>();
 
 		/* registering default services */
 		registerService(new UIService());
@@ -117,43 +111,82 @@ public class Slime implements EventListFeeder {
 		return services.get(name);
 	}
 
+	private void replySockets() {
+		boolean empty;
+		synchronized (sendQueue) {
+			empty = sendQueue.isEmpty();
+		}
+
+		while (!empty) {
+			SocketChannel sc;
+			ByteBuffer bb;
+
+			synchronized (sendQueue) {
+				empty = sendQueue.isEmpty();
+				if (empty)
+					return;
+				sc = sendQueue.getLeft();
+				bb = sendQueue.getRight();
+				sendQueue.remove();
+				empty = sendQueue.isEmpty();
+			}	
+			try {
+				sc.write(bb);
+				LOG.debug("sent in replySocket()");
+			} catch (IOException ioe) {
+				LOG.error("write", ioe);
+			}
+		}
+	}
+
+	public void enqueueRun(Runnable r) {
+		synchronized (runQueue) {
+			runQueue.add(r);
+		}
+		selector.wakeup();
+	}
+
+	public void enqueueReply(SocketChannel sc, ByteBuffer bb) {
+		synchronized (sendQueue) {
+			sendQueue.add(sc, bb);
+		}
+		selector.wakeup();
+	}
+
 	private void dispatchSockets(long until) {
 		long duration = until - System.currentTimeMillis();
-		LOG.trace("duration: " + duration + "until : " + until + " current " + System.currentTimeMillis());
-		while (duration > 0) {
-			if (sockets.isEmpty()) {
-				try {
-					Thread.sleep(duration);
-				} catch (InterruptedException ie) { }
+		LOG.trace("[dispatchSockets] dur: " + duration + " until : " + until + " current " + System.currentTimeMillis());
+		if (duration > 0) {
+			LOG.debug("selecting from the keys : " + selector.keys() + " for " + duration);
+			try {
+				LOG.debug("select returns : " + selector.select(duration));
+			} catch (IOException ioe) {
+				LOG.error("Error while selecting", ioe);
+				return;
 			}
-			else {
-				LOG.debug("waiting for the keys : " + selector.keys());
-				try {
-					selector.select(duration);
-				} catch (IOException ioe) {
-					LOG.error("Error while selecting : " + ioe);
-				}
-				Set<SelectionKey> keys = selector.selectedKeys();
-				for (SelectionKey sk : keys) {
-					SocketEvent se = (SocketEvent) sk.attachment();
-					LOG.trace("selected something sk:" + sk + " socket:" + se.getSocket());
-					//eventTable.get(se).dispatch(se);
-					se.setReadyOps(sk.readyOps());
+			Set<SelectionKey> keys = selector.selectedKeys();
+			Iterator<SelectionKey> iterator = selector.selectedKeys().iterator();
+			while (iterator.hasNext()) {
+				SelectionKey sk = iterator.next();
+				iterator.remove();
 
-					keys.remove(sk);
-					if (!sk.isValid())
-						continue;
+				if (!sk.isValid())
+					continue;
 
-					synchronized (dispatchQueue) {
-						dispatchQueue.add(new Dispatch(se, eventTable.get(se)));
-					}
-					unregisterEvent(se);
+				SocketEvent se = (SocketEvent) sk.attachment();
+				LOG.debug("selected something sk:" + sk + " socket:" + se.getSocket() + " readyOps:" + sk.readyOps());
+				se.setReadyOps(sk.readyOps());
+
+				Service s = eventTable.get(se);
+				unregisterEvent(se);
+
+				synchronized (dispatchQueue) {
+					dispatchQueue.add(se, s);
+					dispatchQueue.notify();
 				}
 			}
-
 			duration = until - System.currentTimeMillis();
 		}
-			
 	}
 
 	private void dispatchMessages() {
@@ -167,11 +200,14 @@ public class Slime implements EventListFeeder {
 			if (me != null) {
 				synchronized (dispatchQueue) {
 					if (me instanceof BroadcastMessageEvent) {
-						for (Service s : services.values())
-							dispatchQueue.add(new Dispatch(me, s));
+						for (Service s : services.values()) {
+							dispatchQueue.add(me, s);
+							dispatchQueue.notify();
+						}
 					}
 					else {
-						dispatchQueue.add(new Dispatch(me, services.get(me.getDestination())));
+						dispatchQueue.add(me, services.get(me.getDestination()));
+						dispatchQueue.notify();
 					}
 				}
 			}
@@ -188,7 +224,8 @@ public class Slime implements EventListFeeder {
 				timers.remove(te);
 				//eventTable.get(te).dispatch(te);
 				synchronized (dispatchQueue) {
-					dispatchQueue.add(new Dispatch(te, eventTable.get(te)));
+					dispatchQueue.add(te, eventTable.get(te));
+					dispatchQueue.notify();
 				}
 				if (te.getType() == TimerEvent.TYPE_PERIODIC_REL) {
 					te.advanceToNextPeriod();
@@ -201,41 +238,67 @@ public class Slime implements EventListFeeder {
 			}
 			return minTime;
 		} catch (NoSuchElementException nsee) {
-			return DEFAULT_SLEEP_MILLIS + System.currentTimeMillis();
+			return DEFAULT_LONG_SLEEP_MILLIS + System.currentTimeMillis();
 		}
 	}
 
 	public void execute() {
-		boolean empty;
+		Event e;
+		Service s;
 		synchronized (dispatchQueue) {
-			empty = dispatchQueue.isEmpty();
+			if (dispatchQueue.isEmpty())
+				try {
+					dispatchQueue.wait(DEFAULT_LONG_SLEEP_MILLIS);
+				} catch (Exception ie) { }
+			
+			if (dispatchQueue.isEmpty() || stopRequest)
+				return;
+
+			e = dispatchQueue.getLeft();
+			s = dispatchQueue.getRight();
+			dispatchQueue.remove();
 		}
-		
-		while (!empty) {
-			Dispatch d;
-			synchronized (dispatchQueue) {
-				if (dispatchQueue.isEmpty())
-					return;
-				d = dispatchQueue.remove(0);
-				empty = dispatchQueue.isEmpty();
-			}
-			d.execute();
+		try {
+			s.dispatch(e);
+		} catch (IOException ioe) {
+			LOG.error("Error while dispatching : ", ioe);
 		}
 	}
 
 	public void start() {
+		start(null, null);
+	}
+
+	public void start(String baseDirs) {
+		start(baseDirs, null);
+	}
+
+	public void start(String baseDirs, String mainClass) {
 		config = new Config();
-		String masterAddr = System.getProperty("master.address");
-		if (masterAddr != null)
+		String masterAddr = System.getProperty(Config.PROPERTY_NAME_MASTERADDR);
+		if (masterAddr != null) {
+			LOG.debug("Setting master address as '" + masterAddr + "'.");
 			config.put("master", masterAddr);
-		else
+		}
+		else {
+			LOG.debug("Sending a 'deployAll' message to the 'deploy' service.");
 			registerEvent(new MessageEvent("deploy", null, "deployAll"), null);
+		}
+
+		if (mainClass != null)
+			config.put(Config.PROPERTY_NAME_MAINCLASS, mainClass);
+		else
+			config.put(Config.PROPERTY_NAME_MAINCLASS, ClassUtils.getMainClass().getName());
+
+		if (baseDirs != null)
+			config.put(Config.ELEMENT_NAME_BASE, baseDirs);
 
 		for (Service s : services.values()) {
 			try {
+				LOG.info("A service '" + s.getName() + "' is getting started.");
 				s.init();
 			} catch (IOException ioe) {
-				LOG.error("Error initializing a service '" + s.getName() + "' due to " + ioe);
+				LOG.error("Error initializing a service '" + s.getName() + "'", ioe);
 			}
 		}
 
@@ -251,8 +314,6 @@ public class Slime implements EventListFeeder {
 					}
 					while (!stopRequest) {
 						execute();
-						try { Thread.sleep(DEFAULT_SLEEP_MILLIS); }
-						catch (InterruptedException ie) { }
 					}
 					synchronized (threadCnt) {
 						threadCnt--;
@@ -265,11 +326,18 @@ public class Slime implements EventListFeeder {
 		}
 		
 		while (!stopRequest) {
+			synchronized (runQueue) {
+				for (Runnable r : runQueue) {
+					r.run();
+				}
+				runQueue.clear();
+			}
 			long until = dispatchTimers();
 			dispatchMessages();
-			execute();
 			dispatchSockets(until);
+			replySockets();
 		}
+
 		while (true) {
 			try { Thread.sleep(DEFAULT_SLEEP_MILLIS); } catch (Exception e) { }
 			try { Thread.sleep(DEFAULT_SLEEP_MILLIS); } catch (Exception e) { }
@@ -286,7 +354,7 @@ public class Slime implements EventListFeeder {
 			try {
 				s.close();
 			} catch (IOException ioe) {
-				LOG.error("Error closing a service '" + s.getName() + "' due to " + ioe);
+				LOG.error("Error closing a service '" + s.getName() + "'", ioe);
 			}
 		}
 		LOG.info("Main Thread " + Thread.currentThread() + " terminated");
@@ -294,19 +362,27 @@ public class Slime implements EventListFeeder {
 
 	public void stop() {
 		this.stopRequest = true;
+
 		selector.wakeup();
+		synchronized (dispatchQueue) {
+			dispatchQueue.notifyAll();
+		}
 	}
 
 	public void registerEvent(Event e, Service s) {
 		e.registerEvent(this, selector);
 
 		eventTable.put(e, s);
+
+		selector.wakeup();
 	}
 
 	public void unregisterEvent(Event e) {
 		e.unregisterEvent(this, selector);
 
 		eventTable.remove(e);
+
+		selector.wakeup();
 	}
 
 	public void cancelEvent(Event e) {

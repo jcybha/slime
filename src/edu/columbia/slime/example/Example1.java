@@ -12,7 +12,7 @@ public class Example1 {
 		}
 
 		public void init() {
-			register(new TimerEvent(TimerEvent.TYPE_PERIODIC_REL, 3000));
+//			register(new TimerEvent(TimerEvent.TYPE_PERIODIC_REL, 3000));
 		}
 
 		public void dispatch(Event e) {

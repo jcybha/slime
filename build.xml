@@ -30,7 +30,7 @@
       <fileset dir="${ENVDIR}"/>
     </copy>
 
-    <!--antcall target="checkstyle"/-->
+    <delete dir="${DISTDIR}"/>
     <mkdir dir="${DISTDIR}"/>
     <jar jarfile="${DISTDIR}/slime-1.0-${DSTAMP}.jar">
       <fileset dir="${BUILDDIR}/"/>

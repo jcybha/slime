@@ -18,7 +18,6 @@ public class SocketEvent extends Event {
 
 	protected SelectableChannel s;
 
-	SelectionKey sk;
 	int readyOps;
 
 	public SocketEvent(SelectableChannel s) {
@@ -34,50 +33,58 @@ public class SocketEvent extends Event {
 	}
 
 	@SuppressWarnings("unchecked")
-        public void registerEvent(EventListFeeder elf, Selector selector) {
-		Collection<SocketEvent> c = (Collection<SocketEvent>) elf.getSocketEventList();
-		c.add(this);
+        public void registerEvent(EventListFeeder elf, final Selector selector) {
+		final Collection<SocketEvent> c = (Collection<SocketEvent>) elf.getSocketEventList();
+		final SelectableChannel sc = s;
+		final SocketEvent se = this;
 
-		try {
-LOG.info("regist isClient? " + (s instanceof SocketChannel) + " validOps: " + s.validOps());
-			s.configureBlocking(false);
-			sk = s.register(selector,
-					s.validOps(), this);
-LOG.info("got SelectionKey: " + sk);
-		} catch (ClosedChannelException cce) {
-			LOG.info("CCE: " + cce);
-		} catch (Exception e) {
-			LOG.info("Exception: " + e);
-			e.printStackTrace();
-		}
-LOG.info("WTF happened?");
+		Slime.getInstance().enqueueRun(new Runnable() {
+			public void run() {
+				c.add(se);
+
+				try {
+					sc.configureBlocking(false);
+					sc.register(selector, (sc.validOps() & ~(SelectionKey.OP_WRITE | SelectionKey.OP_CONNECT)), se);
+				} catch (ClosedChannelException cce) {
+					LOG.info("CCE: " + cce);
+				} catch (Exception e) {
+					LOG.info("Exception: " + e);
+					e.printStackTrace();
+				}
+			}
+		});
         }
 
 	@SuppressWarnings("unchecked")
-        public void unregisterEvent(EventListFeeder elf, Selector selector) {
-		Collection<SocketEvent> c = (Collection<SocketEvent>) elf.getSocketEventList();
-		c.remove(this);
+        public void unregisterEvent(EventListFeeder elf, final Selector selector) {
+		final Collection<SocketEvent> c = (Collection<SocketEvent>) elf.getSocketEventList();
+		final SelectableChannel sc = s;
+		final SocketEvent se = this;
 
-		try {
-LOG.info("unreg isClient? " + (s instanceof SocketChannel) + " validOps: " + s.validOps());
-			sk = s.register(selector,
-					0, this);
-		} catch (ClosedChannelException cce) {
-			cce.printStackTrace();
-		}
+		Slime.getInstance().enqueueRun(new Runnable() {
+			public void run() {
+				c.remove(se);
+
+				try {
+					sc.register(selector, 0, se);
+				} catch (ClosedChannelException cce) {
+					LOG.info("CCE: " + cce);
+				} catch (Exception e) {
+					LOG.info("Exception: " + e);
+					e.printStackTrace();
+				}
+			}
+		});
         }
 
         public void cancelEvent(EventListFeeder elf) {
 		elf.getSocketEventList().remove(this);
-
+/*
 		if (sk != null)
 			sk.cancel();
 		sk = null;
+*/
         }
-
-	public SelectionKey getSelectionKey() {
-		return sk;
-	}
 
 	public SelectableChannel getSocket() {
 		return s;

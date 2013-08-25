@@ -33,6 +33,9 @@ public class Config extends HashMap<String, Object> {
 
 	public static final String ATTR_NAME_USER = "user";
 
+	public static final String PROPERTY_NAME_MAINCLASS = "main.class";
+	public static final String PROPERTY_NAME_MASTERADDR = "master.address";
+
 	private Map<String, String> thisServer;
 
 	public class ConfigParser extends DefaultHandler {

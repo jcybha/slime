@@ -23,6 +23,7 @@ import edu.columbia.slime.Slime;
 import edu.columbia.slime.service.Service;
 import edu.columbia.slime.service.Event;
 import edu.columbia.slime.service.MessageEvent;
+import edu.columbia.slime.util.TimeUtil;
 
 public class UIService extends Service {
 
@@ -44,7 +45,7 @@ public class UIService extends Service {
 		public String getClose() {
 			LOG.info("22 UIService got close request!");
 			Slime.getInstance().registerEvent(new MessageEvent("manage", null, "closeAll"), null);
-			return CLICHED_MESSAGE;
+			return CLICHED_MESSAGE + TimeUtil.getTimeString();
 		}
 	}
 

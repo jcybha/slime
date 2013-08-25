@@ -32,9 +32,13 @@ public abstract class BasicNetworkService extends Service {
 
 		se = new SocketEvent(ssc);
 		register(se);
+
+		initCustom();
 	}
 
 	public final void close() throws IOException {
+		closeCustom();
+
 		cancel(se);
 
 		ssc.close();
@@ -53,9 +57,12 @@ public abstract class BasicNetworkService extends Service {
 		if ((se.getReadyOps() & SelectionKey.OP_ACCEPT) != 0) {
 			ServerSocketChannel ssc = (ServerSocketChannel) se.getSocket();
 			SocketChannel sc = ssc.accept();
+			sc.socket().setTcpNoDelay(true);
 			clientSockets.add(sc);
 			register(new SocketEvent(sc));
 			LOG.info("Opened a new connection from " + sc.socket());
+
+			newConnection(sc);
 		}
 		if ((se.getReadyOps() & SelectionKey.OP_READ) != 0) {
 			LOG.debug("Reading from a connection " + e);
@@ -70,5 +77,14 @@ public abstract class BasicNetworkService extends Service {
 	public void dispatchTimer(TimerEvent te) throws IOException {
 	}
 
+	public void newConnection(SocketChannel sc) throws IOException {
+	}
+
 	public abstract void read(SocketChannel sc) throws IOException;
+
+	public void initCustom() throws IOException {
+	}
+
+	public void closeCustom() throws IOException {
+	}
 }
