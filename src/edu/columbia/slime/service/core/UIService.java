@@ -50,9 +50,9 @@ public class UIService extends Service {
 	}
 
 	public void init() throws IOException {
-		if (!Slime.isMaster())
+		if (!Slime.isLauncher())
 			return;
-		LOG.info("In master, trying to launch an http server");
+		LOG.info("In launcher, trying to launch an http server");
 		UIResource uir = new UIResource();
 		final ResourceConfig resourceConfig = new ResourceConfig(UIResource.class);
 		final HttpServer server = GrizzlyHttpServerFactory.createHttpServer(BASE_URI, resourceConfig);

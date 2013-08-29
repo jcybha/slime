@@ -5,8 +5,19 @@ import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+
+
 public class Network {
+	public static final Log LOG = LogFactory.getLog(Network.class);
+	public static String myIP = getMyAddressInternal();
+
 	public static String getMyAddress() {
+		return myIP;
+	}
+
+	private static String getMyAddressInternal() {
 		try {
 			Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
 			while (interfaces.hasMoreElements()) {
@@ -19,6 +30,8 @@ public class Network {
 				while (addresses.hasMoreElements()) {
 					InetAddress addr = addresses.nextElement();
 					String ip = addr.getHostAddress();
+					if (ip.contains(":")) // ipv6
+						continue;
 					return ip;
 				}
 			}

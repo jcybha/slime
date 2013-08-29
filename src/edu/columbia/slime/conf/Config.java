@@ -7,6 +7,7 @@ import java.util.Stack;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import javax.xml.parsers.SAXParser;
 
 import org.apache.commons.logging.Log;
@@ -34,7 +35,7 @@ public class Config extends HashMap<String, Object> {
 	public static final String ATTR_NAME_USER = "user";
 
 	public static final String PROPERTY_NAME_MAINCLASS = "main.class";
-	public static final String PROPERTY_NAME_MASTERADDR = "master.address";
+	public static final String PROPERTY_NAME_LAUNCHERADDR = "launcher.address";
 
 	private Map<String, String> thisServer;
 
@@ -164,11 +165,25 @@ public class Config extends HashMap<String, Object> {
 	}
 
 	public Config() {
-		this(configPath);
+		init(configPath, getClass());
 	}
 
-	public Config(String configPath) {
-		InputStream is = getClass().getResourceAsStream("/" + configPath);
+	public Config(Map<String, Class> configPaths) {
+		init(configPath, getClass());
+		for (String path : configPaths.keySet()) {
+			init(path, configPaths.get(path));
+		}
+	}
+
+	public Config(String configPath, Class klass) {
+		init(configPath, klass);
+	}
+
+	private void init(String configPath, Class klass) {
+		InputStream is = null;
+		if (klass != null)
+			is = klass.getResourceAsStream("/" + configPath);
+
 		if (is == null) {
 			try {
 				is = new FileInputStream(configPath);

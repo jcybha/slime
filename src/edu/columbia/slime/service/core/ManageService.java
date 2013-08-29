@@ -4,6 +4,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.io.Serializable;
 import java.net.InetSocketAddress;
 import java.nio.channels.SocketChannel;
 import java.nio.channels.ServerSocketChannel;
@@ -45,10 +46,9 @@ public class ManageService extends MasterSlaveService {
 		if (me.getMessage().equals("closeAll")) {
 			CloseProtocol cp = new CloseProtocol();
 			LOG.info("received a stop request");
-			for (SocketChannel sc : clientSockets) {
-				writeAsync(sc, cp);
-				LOG.debug("sent a close message to " + sc.socket());
-			}
+
+			broadcastAsync(cp);
+			LOG.debug("sent a close message to all");
 			Slime.getInstance().stop();
 		}
 	}
@@ -57,15 +57,12 @@ public class ManageService extends MasterSlaveService {
 		if (te == pingTimer) {
 			PingProtocol pp = new PingProtocol();
 
-			for (SocketChannel sc : clientSockets) {
-				writeAsync(sc, pp);
-				LOG.info("requested a ping message to " + sc.socket());
-			}
+			broadcastAsync(pp);
 			LOG.info("Pinged to all");
 		}
 	}
 
-	public void read(SocketChannel sc, Object obj) throws IOException {
+	public void read(SocketChannel sc, Serializable obj) throws IOException {
 		Protocol.validate(obj, Protocol.class);
 
 		LOG.info("Received:" + obj);

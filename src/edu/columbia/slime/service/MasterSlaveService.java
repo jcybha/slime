@@ -6,8 +6,13 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.Serializable;
 import java.util.Queue;
 import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.ArrayList;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -19,9 +24,12 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
 import edu.columbia.slime.Slime;
+import edu.columbia.slime.util.Network;
 
 public abstract class MasterSlaveService extends Service {
 	private static final String ATTR_NAME_PORT = "port";
+	private static final String ATTR_NAME_MASTERS = "masters";
+	private static final String ATTR_NAME_SOM = "slaveonmaster";
 	private static final int MAGIC = 0x48031027;
 
 	private static final int READ_RETRY_SLEEP = 500;
@@ -31,9 +39,25 @@ public abstract class MasterSlaveService extends Service {
 	ServerSocketChannel ssc;
 	SocketChannel sc;
 
+	List<String> masters = new ArrayList<String>();
+	boolean needSlaveOnMaster = false;
+	boolean isMaster;
+	int numberOfRandomMasters = -1;
+
+	protected final boolean needMaster() {
+		return isMaster;
+	}
+
+	protected final boolean needSlave() {
+		if (needSlaveOnMaster)
+			return true;
+
+		return !needMaster();
+	}
+
 	int port = 0;
 
-	protected Queue<SocketChannel> clientSockets = new LinkedList<SocketChannel>();
+	private final Queue<SocketChannel> clientSockets = new LinkedList<SocketChannel>();
 
 	private final void initMaster() throws IOException {
 		ssc = ServerSocketChannel.open();
@@ -56,15 +80,16 @@ public abstract class MasterSlaveService extends Service {
 	}
 
 	private final void initSlave() throws IOException {
-		sc = SocketChannel.open();
-		sc.socket().connect(new InetSocketAddress(Slime.getInstance().getConfig().get("master"), port));
-		sc.configureBlocking(false);
-		sc.socket().setTcpNoDelay(true);
-		LOG.info("Created a [slave] service '" + getName() + "' connected to port " + port);
-		//sc.write(java.nio.ByteBuffer.wrap("Hello".getBytes()));
+		for (String master : masters) {
+			sc = SocketChannel.open();
+			sc.socket().connect(new InetSocketAddress(master, port));
+			sc.configureBlocking(false);
+			sc.socket().setTcpNoDelay(true);
 
-		se = new SocketEvent(sc);
-		register(se);
+			se = new SocketEvent(sc);
+			register(se);
+		}
+		LOG.info("Created a [slave] service '" + getName() + "' connected to masters " + masters + " through a port " + port);
 
 		initSlaveCustom();
 	}
@@ -84,15 +109,57 @@ public abstract class MasterSlaveService extends Service {
 				throw new IOException("Cannot find 'port' attribute for the service '" + getName());
 			}
 			port = Integer.parseInt(getDefaultConfig().get(ATTR_NAME_PORT));
+
+			if (getDefaultConfig().get(ATTR_NAME_MASTERS) != null) {
+				String mastersAttr = getDefaultConfig().get(ATTR_NAME_MASTERS);
+				for (String master : mastersAttr.split(",")) {
+					masters.add(master);
+				}
+			}
+			if (masters.isEmpty()) {
+				String launcher = Slime.getConfig().get("launcher");
+				if (launcher == null)
+					launcher = Network.getMyAddress();
+				masters.add(launcher);
+
+				if (Slime.getConfig().get("masterNum") != null) {
+					String masterNum = Slime.getConfig().get("masterNum");
+					try {
+						numberOfRandomMasters = Integer.parseInt(masterNum);
+					} catch (Exception e) {
+						throw new RuntimeException(e);
+					}
+					if (numberOfRandomMasters < 1)
+						throw new RuntimeException("Too small number for masters");
+
+					Map<String, Map<String, String>> serverInfo = Slime.getConfig().getServerInfo();
+					for (String server : serverInfo.keySet()) {
+						if (numberOfRandomMasters <= masters.size())
+							break;
+						if (server.equals(launcher))
+							continue;
+						masters.add(server);
+					}
+				}
+			}
+
+			isMaster = masters.contains(Network.getMyAddress());
+
+			if (getDefaultConfig().get(ATTR_NAME_SOM) != null) {
+				String som = getDefaultConfig().get(ATTR_NAME_SOM);
+				needSlaveOnMaster = (som.equalsIgnoreCase("true") || som.equalsIgnoreCase("yes"));
+			}
+
 		} catch (Exception e) {
 			LOG.error("Error initializing the service " + getName());
 			e.printStackTrace();
 			throw new IOException(e);
 		}
-		if (Slime.isMaster()) {
+
+		if (needMaster()) {
 			initMaster();
 		}
-		else {
+		if (needSlave()) {
 			initSlave();
 		}
 	}
@@ -111,8 +178,11 @@ public abstract class MasterSlaveService extends Service {
 			ServerSocketChannel ssc = (ServerSocketChannel) se.getSocket();
 			SocketChannel sc = ssc.accept();
 			sc.socket().setTcpNoDelay(true);
-			clientSockets.add(sc);
 			register(new SocketEvent(sc));
+
+			synchronized (clientSockets) {
+				clientSockets.add(sc);
+			}
 
 			newConnection(sc);
 
@@ -146,7 +216,7 @@ public abstract class MasterSlaveService extends Service {
 	public void dispatchTimer(TimerEvent te) throws IOException {
 	}
 
-	public abstract void read(SocketChannel sc, Object obj) throws IOException;
+	public abstract void read(SocketChannel sc, Serializable obj) throws IOException;
 	public abstract void read(SocketChannel sc, ByteBuffer bb) throws IOException;
 
 	protected final void readFully(SocketChannel sc, ByteBuffer bb) throws IOException {
@@ -194,7 +264,7 @@ public abstract class MasterSlaveService extends Service {
 			byte[] array = dataByteBuffer.array();
 			ois = new ObjectInputStream(new ByteArrayInputStream(array));
 			try {
-				read(sc, ois.readObject());
+				read(sc, (Serializable) ois.readObject());
 			} catch (ClassNotFoundException cnfe) {
 				throw new RuntimeException(cnfe);
 			}
@@ -204,7 +274,7 @@ public abstract class MasterSlaveService extends Service {
 			read(sc, dataByteBuffer);
 	}
 
-	public final void writeAsync(SocketChannel sc, Object obj) throws IOException {
+	public final void writeAsync(SocketChannel sc, Serializable obj) throws IOException {
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		int i;
 		for (i = 0; i < 12; i++)
@@ -237,12 +307,62 @@ public abstract class MasterSlaveService extends Service {
 		Slime.getInstance().enqueueReply(sc, bb);
 	}
 
+	public final void broadcastAsync(Serializable obj) throws IOException {
+		synchronized (clientSockets) {
+			for (SocketChannel sc : clientSockets) {
+				writeAsync(sc, obj);
+			}
+		}
+	}
+
+	public final void broadcastAsync(ByteBuffer bb) throws IOException {
+		synchronized (clientSockets) {
+			for (SocketChannel sc : clientSockets) {
+				writeAsync(sc, bb);
+			}
+		}
+	}
+
+	public final Map<SocketChannel, Serializable> allocateObjectMap() {
+		Map<SocketChannel, Serializable> map = new HashMap<SocketChannel, Serializable>();
+		
+		synchronized (clientSockets) {
+			for (SocketChannel sc : clientSockets) {
+				map.put(sc, null);
+			}
+		}
+		return map;
+	}
+
+	public final Map<SocketChannel, ByteBuffer> allocateBufferMap() {
+		Map<SocketChannel, ByteBuffer> map = new HashMap<SocketChannel, ByteBuffer>();
+		
+		synchronized (clientSockets) {
+			for (SocketChannel sc : clientSockets) {
+				map.put(sc, null);
+			}
+		}
+		return map;
+	}
+
+	public final void writeObjectMapAsync(Map<SocketChannel, Serializable> map) throws IOException {
+		for (SocketChannel sc : map.keySet()) {
+			writeAsync(sc, map.get(sc));
+		}
+	}
+
+	public final void writeBufferMapAsync(Map<SocketChannel, ByteBuffer> map) throws IOException {
+		for (SocketChannel sc : map.keySet()) {
+			writeAsync(sc, map.get(sc));
+		}
+	}
+
 	/* inherited from Closeable */
 	public void close() throws IOException {
-		if (Slime.isMaster()) {
+		if (needMaster()) {
 			closeMaster();
 		}
-		else {
+		if (needSlave()) {
 			closeSlave();
 		}
 	}

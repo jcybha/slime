@@ -24,7 +24,7 @@ public class Example1 {
 	}
 
 	public static void main(String[] args) {
-		new SampleService1().init();
+		Slime.getInstance().registerService(new SampleService1());
 		Slime.getInstance().start();
 	}
 }

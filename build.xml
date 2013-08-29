@@ -23,11 +23,12 @@
       </classpath>
     </javac>
 
-    <symlink action="delete" link="${BUILDDIR}/conf" failonerror="false"/>
-    <symlink link="${BUILDDIR}/conf" resource="${CONFDIR}"/>
-
     <copy todir="${BUILDDIR}">
       <fileset dir="${ENVDIR}"/>
+    </copy>
+
+    <copy todir="${BUILDDIR}/conf">
+      <fileset dir="${CONFDIR}"/>
     </copy>
 
     <delete dir="${DISTDIR}"/>
@@ -40,7 +41,7 @@
   <taskdef resource="checkstyletask.properties" classpath="${TOOLDIR}/checkstyle-5.5-all.jar" />
   <target name="checkstyle" description="Generates a report of code convention violations.">
     <checkstyle config="${DOCSDIR}/sun_checks.xml">
-      <fileset dir="${SRCDIR}" includes="**/*.java" /> <!--excludes="edu/columbia/mipl/syntax/*.java"/-->
+      <fileset dir="${SRCDIR}" includes="**/*.java" />
       <formatter type="plain"/>
     </checkstyle>
   </target>

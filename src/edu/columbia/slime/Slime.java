@@ -52,6 +52,8 @@ public class Slime implements EventListFeeder {
 	Map<String, Service> services;
 	List<Runnable> runQueue;
 
+	private Map<String, Class> configFiles = new HashMap<String, Class>();
+
 	protected Slime() {
 		sockets = new ArrayList<SocketEvent>();
 		timers = new TreeSet<TimerEvent>(
@@ -99,8 +101,12 @@ public class Slime implements EventListFeeder {
 		return config;
 	}
 
-	public static boolean isMaster() {
-		return config.get("master") == null;
+	public void addConfigFile(String file, Class klass) {
+		configFiles.put(file, klass);
+	}
+
+	public static boolean isLauncher() {
+		return config.get("launcher") == null;
 	}
 
 	public void registerService(Service service) {
@@ -274,11 +280,12 @@ public class Slime implements EventListFeeder {
 	}
 
 	public void start(String baseDirs, String mainClass) {
-		config = new Config();
-		String masterAddr = System.getProperty(Config.PROPERTY_NAME_MASTERADDR);
-		if (masterAddr != null) {
-			LOG.debug("Setting master address as '" + masterAddr + "'.");
-			config.put("master", masterAddr);
+		config = new Config(configFiles);
+
+		String launcherAddr = System.getProperty(Config.PROPERTY_NAME_LAUNCHERADDR);
+		if (launcherAddr != null) {
+			LOG.debug("Setting launcher address as '" + launcherAddr + "'.");
+			config.put("launcher", launcherAddr);
 		}
 		else {
 			LOG.debug("Sending a 'deployAll' message to the 'deploy' service.");
