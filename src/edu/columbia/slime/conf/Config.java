@@ -33,6 +33,9 @@ public class Config extends HashMap<String, Object> {
 	public static final String ELEMENT_NAME_DIST = "dist";
 
 	public static final String ATTR_NAME_USER = "user";
+	public static final String ATTR_NAME_PASSWD = "passwd";
+	public static final String ATTR_NAME_PASSPHRASE = "passphrase";
+	public static final String ATTR_NAME_PASSPHRASEFILE = "passphrase.file";
 
 	public static final String PROPERTY_NAME_MAINCLASS = "main.class";
 	public static final String PROPERTY_NAME_LAUNCHERADDR = "launcher.address";
@@ -68,6 +71,7 @@ public class Config extends HashMap<String, Object> {
 			Map<String, String> map = new HashMap<String, String>();
 			for (int i = 0; i < length; i++) {
 				map.put(attr.getQName(i), attr.getValue(i));
+System.out.println("Converting (" + attr.getQName(i) + ":" +  attr.getValue(i));
 			}
 			return map;
 		}

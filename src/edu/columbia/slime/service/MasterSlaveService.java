@@ -26,23 +26,40 @@ import org.apache.commons.logging.LogFactory;
 import edu.columbia.slime.Slime;
 import edu.columbia.slime.util.Network;
 
-public abstract class MasterSlaveService extends Service {
+public abstract class MasterSlaveService extends Service implements NetworkServiceInterface {
 	private static final String ATTR_NAME_PORT = "port";
 	private static final String ATTR_NAME_MASTERS = "masters";
 	private static final String ATTR_NAME_SOM = "slaveonmaster";
-	private static final int MAGIC = 0x48031027;
+	private static final int MAGIC1 = 0x48031027;
+	private static final int MAGIC2 = 0x91785319;
 
 	private static final int READ_RETRY_SLEEP = 500;
 	private static final int READ_RETRY_CNT = 10;
 
+	private static final int SLAVE_INIT_DELAY_TIME = 10000;
+
+        private int launcherIdentity = IDENTITY_UNKNOWN;
+        private static final int IDENTITY_UNKNOWN = 0;
+        private static final int IDENTITY_LAUNCHER = 1;
+        private static final int IDENTITY_NONLAUNCHER = 2;
+
+	int protocol_version = 0;
+
 	SocketEvent se;
 	ServerSocketChannel ssc;
-	SocketChannel sc;
 
 	List<String> masters = new ArrayList<String>();
 	boolean needSlaveOnMaster = false;
 	boolean isMaster;
 	int numberOfRandomMasters = -1;
+
+	NetworkServiceInterface masterService;
+	NetworkServiceInterface slaveService;
+
+	public void setMasterAndSlaveServices(NetworkServiceInterface master, NetworkServiceInterface slave) {
+		masterService = master;
+		slaveService = slave;
+	}
 
 	protected final boolean needMaster() {
 		return isMaster;
@@ -55,9 +72,25 @@ public abstract class MasterSlaveService extends Service {
 		return !needMaster();
 	}
 
+	public final boolean isLauncher() {
+                if (launcherIdentity == IDENTITY_UNKNOWN) {
+                        if (Slime.getConfig().get("launcher") == null) {
+                                launcherIdentity = IDENTITY_LAUNCHER;
+                        }
+                        else
+                                launcherIdentity = IDENTITY_NONLAUNCHER;
+                }
+                return launcherIdentity == IDENTITY_LAUNCHER;
+        }
+
+	protected final void setProtocolVersion(int version) {
+		protocol_version = version;
+	}
+
 	int port = 0;
 
-	private final Queue<SocketChannel> clientSockets = new LinkedList<SocketChannel>();
+	private final Queue<SocketChannel> slaveSockets = new LinkedList<SocketChannel>();
+	private final Queue<SocketChannel> masterSockets = new LinkedList<SocketChannel>();
 
 	private final void initMaster() throws IOException {
 		ssc = ServerSocketChannel.open();
@@ -68,38 +101,57 @@ public abstract class MasterSlaveService extends Service {
 		se = new SocketEvent(ssc);
 		register(se);
 
-		initMasterCustom();
+		masterService.init();
 	}
 
 	private final void closeMaster() throws IOException {
-		closeMasterCustom();
+		masterService.close();
 
-		cancel(se);
+//		cancel(se);
 
 		ssc.close();
+		synchronized (slaveSockets) {
+			for (SocketChannel sc : slaveSockets) {
+				sc.close();
+			}
+			masterSockets.clear();
+		}
 	}
 
 	private final void initSlave() throws IOException {
+		LOG.info("Sleep for " + SLAVE_INIT_DELAY_TIME + " ms waiting masters launched");
+		try { Thread.sleep(SLAVE_INIT_DELAY_TIME); }
+		catch (Exception e) { }
+
 		for (String master : masters) {
-			sc = SocketChannel.open();
+			SocketChannel sc = SocketChannel.open();
 			sc.socket().connect(new InetSocketAddress(master, port));
 			sc.configureBlocking(false);
 			sc.socket().setTcpNoDelay(true);
+
+			synchronized (masterSockets) {
+				masterSockets.add(sc);
+			}
 
 			se = new SocketEvent(sc);
 			register(se);
 		}
 		LOG.info("Created a [slave] service '" + getName() + "' connected to masters " + masters + " through a port " + port);
 
-		initSlaveCustom();
+		slaveService.init();
 	}
 
 	private final void closeSlave() throws IOException {
-		closeSlaveCustom();
+		slaveService.close();
 
-		cancel(se);
+//		cancel(se);
 
-		sc.close();
+		synchronized (masterSockets) {
+			for (SocketChannel sc : masterSockets) {
+				sc.close();
+			}
+			masterSockets.clear();
+		}
 	}
 
 	public final void init() throws IOException {
@@ -180,8 +232,8 @@ public abstract class MasterSlaveService extends Service {
 			sc.socket().setTcpNoDelay(true);
 			register(new SocketEvent(sc));
 
-			synchronized (clientSockets) {
-				clientSockets.add(sc);
+			synchronized (slaveSockets) {
+				slaveSockets.add(sc);
 			}
 
 			newConnection(sc);
@@ -195,29 +247,57 @@ public abstract class MasterSlaveService extends Service {
 		register(se);
 	}
 
-	public void initMasterCustom() throws IOException {
+	public final void newConnection(SocketChannel sc) throws IOException {
+		masterService.newConnection(sc);
 	}
 
-	public void closeMasterCustom() throws IOException {
+	public final void dispatchMessage(MessageEvent me) throws IOException {
+		if (me instanceof MasterMessageEvent) {
+			masterService.dispatchMessage(me);
+		}
+		else if (me instanceof SlaveMessageEvent) {
+			slaveService.dispatchMessage(me);
+		}
+		else
+			throw new RuntimeException("MessageEvent should be either a MasterMessageEvent or a SlaveMessageEvent");
 	}
 
-	public void initSlaveCustom() throws IOException {
+	public final void dispatchTimer(TimerEvent te) throws IOException {
+		if (te instanceof MasterTimerEvent) {
+			masterService.dispatchTimer(te);
+		}
+		else if (te instanceof SlaveTimerEvent) {
+			slaveService.dispatchTimer(te);
+		}
+		else
+			throw new RuntimeException("TimerEvent should be either a MasterTimerEvent or a SlaveTimerEvent");
 	}
 
-	public void closeSlaveCustom() throws IOException {
+	public final void read(SocketChannel sc, Serializable obj) throws IOException {
+		boolean toMaster;
+		synchronized (masterSockets) {
+			toMaster = masterSockets.contains(sc);
+		}
+		if (toMaster) {
+			slaveService.read(sc, obj);
+		}
+		else {
+			masterService.read(sc, obj);
+		}
 	}
 
-	public void newConnection(SocketChannel sc) throws IOException {
+	public final void read(SocketChannel sc, ByteBuffer bb) throws IOException {
+		boolean toMaster;
+		synchronized (masterSockets) {
+			toMaster = masterSockets.contains(sc);
+		}
+		if (toMaster) {
+			slaveService.read(sc, bb);
+		}
+		else {
+			masterService.read(sc, bb);
+		}
 	}
-
-	public void dispatchMessage(MessageEvent me) throws IOException {
-	}
-
-	public void dispatchTimer(TimerEvent te) throws IOException {
-	}
-
-	public abstract void read(SocketChannel sc, Serializable obj) throws IOException;
-	public abstract void read(SocketChannel sc, ByteBuffer bb) throws IOException;
 
 	protected final void readFully(SocketChannel sc, ByteBuffer bb) throws IOException {
 		int i;
@@ -237,21 +317,26 @@ public abstract class MasterSlaveService extends Service {
 	}
 
 	private final void readInternal(SocketChannel sc) throws IOException {
-		final ByteBuffer headerBuffer = ByteBuffer.wrap(new byte[12]);
+		final ByteBuffer headerBuffer = ByteBuffer.wrap(new byte[20]);
 		ByteBuffer dataByteBuffer = null;
 		ObjectInputStream ois;
 
 		headerBuffer.order(ByteOrder.LITTLE_ENDIAN);
 
 		readFully(sc, headerBuffer);
-		int magic = headerBuffer.getInt(0);
-		int isObject = headerBuffer.getInt(4);
-		int length = headerBuffer.getInt(8);
+		int magic1 = headerBuffer.getInt(0);
+		int magic2 = headerBuffer.getInt(4);
+		int version = headerBuffer.getInt(8);
+		int isObject = headerBuffer.getInt(12);
+		int length = headerBuffer.getInt(16);
 
-		LOG.trace("read header (magic:" + magic + " object:" + isObject + " len:" + length + ").");
+		LOG.trace("read header (magic:" + magic1 + ":" + magic2 + " object:" + isObject + " len:" + length + ").");
 
-		if (magic != MAGIC)
-			throw new RuntimeException("Illegal MAGIC (" + magic + ")");
+		if (magic1 != MAGIC1 || magic2 != MAGIC2)
+			throw new RuntimeException("Illegal MAGIC (" + magic1 + ":" + magic2 + ")");
+
+		if (version != protocol_version)
+			throw new RuntimeException("Unmatched protocol version, " + version + ", expecting " + protocol_version);
 
 		dataByteBuffer = ByteBuffer.allocate(length);
 		dataByteBuffer.order(ByteOrder.LITTLE_ENDIAN);
@@ -285,9 +370,11 @@ public abstract class MasterSlaveService extends Service {
 		final ByteBuffer wrap = ByteBuffer.wrap(baos.toByteArray());
 		wrap.order(ByteOrder.LITTLE_ENDIAN);
 
-		wrap.putInt(0, MAGIC);
-		wrap.putInt(4, 1);
-		wrap.putInt(8, baos.size() - 12);
+		wrap.putInt(0, MAGIC1);
+		wrap.putInt(4, MAGIC2);
+		wrap.putInt(8, protocol_version);
+		wrap.putInt(12, 1);
+		wrap.putInt(16, baos.size() - 12);
 
 		Slime.getInstance().enqueueReply(sc, wrap);
 	}
@@ -296,7 +383,9 @@ public abstract class MasterSlaveService extends Service {
 		final ByteBuffer header = ByteBuffer.allocate(12);
 		header.order(ByteOrder.LITTLE_ENDIAN);
 
-		header.putInt(MAGIC);
+		header.putInt(MAGIC1);
+		header.putInt(MAGIC2);
+		header.putInt(protocol_version);
 		header.putInt(0);
 		header.putInt(bb.position());
 
@@ -307,38 +396,76 @@ public abstract class MasterSlaveService extends Service {
 		Slime.getInstance().enqueueReply(sc, bb);
 	}
 
-	public final void broadcastAsync(Serializable obj) throws IOException {
-		synchronized (clientSockets) {
-			for (SocketChannel sc : clientSockets) {
+	public final int broadcastToMastersAsync(Serializable obj) throws IOException {
+		return broadcastAsync(masterSockets, obj);
+	}
+
+	public final int broadcastToSlavesAsync(Serializable obj) throws IOException {
+		return broadcastAsync(slaveSockets, obj);
+	}
+
+	public final int broadcastAsync(Queue<SocketChannel> sockets, Serializable obj) throws IOException {
+		int i = 0;
+		synchronized (sockets) {
+			for (SocketChannel sc : sockets) {
+				i++;
 				writeAsync(sc, obj);
 			}
 		}
+		return i;
 	}
 
-	public final void broadcastAsync(ByteBuffer bb) throws IOException {
-		synchronized (clientSockets) {
-			for (SocketChannel sc : clientSockets) {
+	public final int broadcastToMastersAsync(ByteBuffer bb) throws IOException {
+		return broadcastAsync(masterSockets, bb);
+	}
+
+	public final int broadcastToSlavesAsync(ByteBuffer bb) throws IOException {
+		return broadcastAsync(slaveSockets, bb);
+	}
+
+	public final int broadcastAsync(Queue<SocketChannel> sockets, ByteBuffer bb) throws IOException {
+		int i = 0;
+		synchronized (sockets) {
+			for (SocketChannel sc : sockets) {
+				i++;
 				writeAsync(sc, bb);
 			}
 		}
+		return i;
 	}
 
-	public final Map<SocketChannel, Serializable> allocateObjectMap() {
+	public final Map<SocketChannel, Serializable> allocateObjectMapForMasters() {
+		return allocateObjectMap(masterSockets);
+	}
+
+	public final Map<SocketChannel, Serializable> allocateObjectMapForSlaves() {
+		return allocateObjectMap(slaveSockets);
+	}
+
+	public final Map<SocketChannel, Serializable> allocateObjectMap(Queue<SocketChannel> sockets) {
 		Map<SocketChannel, Serializable> map = new HashMap<SocketChannel, Serializable>();
 		
-		synchronized (clientSockets) {
-			for (SocketChannel sc : clientSockets) {
+		synchronized (sockets) {
+			for (SocketChannel sc : sockets) {
 				map.put(sc, null);
 			}
 		}
 		return map;
 	}
 
-	public final Map<SocketChannel, ByteBuffer> allocateBufferMap() {
+	public final Map<SocketChannel, ByteBuffer> allocateBufferMapForMasters() {
+		return allocateBufferMap(masterSockets);
+	}
+
+	public final Map<SocketChannel, ByteBuffer> allocateBufferMapForSlaves() {
+		return allocateBufferMap(slaveSockets);
+	}
+
+	public final Map<SocketChannel, ByteBuffer> allocateBufferMap(Queue<SocketChannel> sockets) {
 		Map<SocketChannel, ByteBuffer> map = new HashMap<SocketChannel, ByteBuffer>();
 		
-		synchronized (clientSockets) {
-			for (SocketChannel sc : clientSockets) {
+		synchronized (sockets) {
+			for (SocketChannel sc : sockets) {
 				map.put(sc, null);
 			}
 		}
@@ -358,12 +485,27 @@ public abstract class MasterSlaveService extends Service {
 	}
 
 	/* inherited from Closeable */
-	public void close() throws IOException {
+	public final void close() throws IOException {
 		if (needMaster()) {
 			closeMaster();
 		}
 		if (needSlave()) {
 			closeSlave();
 		}
+	}
+
+	public void register(Event e) {
+		if (e instanceof MessageEvent) {
+			if (!(e instanceof MasterMessageEvent) &&
+			    !(e instanceof SlaveMessageEvent))
+				throw new RuntimeException("Use MasterMessageEvent or SlaveMessageEvent");
+		}
+		else if (e instanceof TimerEvent) {
+			if (!(e instanceof MasterTimerEvent) &&
+			    !(e instanceof SlaveTimerEvent))
+				throw new RuntimeException("Use MasterTimerEvent or SlaveTimerEvent");
+		}
+
+		super.register(e);
 	}
 }
