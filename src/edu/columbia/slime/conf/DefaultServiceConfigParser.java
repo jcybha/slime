@@ -31,11 +31,20 @@ public class DefaultServiceConfigParser extends HashMap<String, String> implemen
 
 		if (get(qName) != null)
 			throw new SAXException("Existing attribute name: " + qName);
+		currentQName = null;
 
 		put(qName, building);
 	}
 
 	public void characters(char ch[], int start, int length) {
 		building += new String(ch, start, length);
+	}
+
+	public Object get(String name) {
+		return super.get(name);
+	}
+
+	public String getString(String name) {
+		return (String) get(name);
 	}
 }

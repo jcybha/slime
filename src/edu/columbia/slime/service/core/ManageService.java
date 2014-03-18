@@ -44,7 +44,11 @@ public class ManageService extends MasterSlaveService {
 			unregister(pingTimer);
 		}
 
-		public void newConnection(SocketChannel sc) throws IOException {
+		public boolean newConnection(ServerSocketChannel ssc, SocketChannel sc) throws IOException {
+			return false;
+		}
+
+		public void closedConnection(SocketChannel sc) throws IOException {
 		}
 
 		public void dispatchMessage(MessageEvent me) throws IOException {
@@ -65,7 +69,7 @@ public class ManageService extends MasterSlaveService {
 				PingProtocol pp = new PingProtocol();
 
 				broadcastToSlavesAsync(pp);
-				LOG.info("Pinged to all");
+				LOG.trace("Pinged to all");
 			}
 		}
 
@@ -91,7 +95,11 @@ public class ManageService extends MasterSlaveService {
 		public void close() throws IOException {
 		}
 
-		public void newConnection(SocketChannel sc) throws IOException {
+		public boolean newConnection(ServerSocketChannel ssc, SocketChannel sc) throws IOException {
+			return false;
+		}
+
+		public void closedConnection(SocketChannel sc) throws IOException {
 		}
 
 		public void dispatchMessage(MessageEvent me) throws IOException {

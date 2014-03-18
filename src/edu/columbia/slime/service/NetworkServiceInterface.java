@@ -31,7 +31,8 @@ public interface NetworkServiceInterface {
 
 	public void close() throws IOException;
 
-	public void newConnection(SocketChannel sc) throws IOException;
+	public boolean newConnection(ServerSocketChannel ssc, SocketChannel sc) throws IOException;
+	public void closedConnection(SocketChannel sc) throws IOException;
 
 	public void dispatchMessage(MessageEvent me) throws IOException;
 

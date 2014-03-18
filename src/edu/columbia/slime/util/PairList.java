@@ -8,6 +8,8 @@ public class PairList<L, R> {
 	private final List<R> right = new ArrayList<R>();
 
 	public boolean add(L l, R r) {
+		if (l == null || r == null)
+			throw new RuntimeException("value is null (l=" + l + " r=" + r + ")");
 		left.add(l);
 		right.add(r);
 

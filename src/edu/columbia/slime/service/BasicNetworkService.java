@@ -77,7 +77,8 @@ public abstract class BasicNetworkService extends Service {
 	public void dispatchTimer(TimerEvent te) throws IOException {
 	}
 
-	public void newConnection(SocketChannel sc) throws IOException {
+	public boolean newConnection(SocketChannel sc) throws IOException {
+		return false;
 	}
 
 	public abstract void read(SocketChannel sc) throws IOException;

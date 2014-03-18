@@ -13,7 +13,7 @@ public abstract class Protocol implements Serializable {
 
 	public static void validate(Object obj, Class klass) {
 		if (!klass.isInstance(obj)) {
-			throw new RuntimeException("Wrong class type");
+			throw new RuntimeException("Wrong class type: " + obj + " is not an instance of " + klass);
 		}
 		Protocol proto = (Protocol) obj;
 

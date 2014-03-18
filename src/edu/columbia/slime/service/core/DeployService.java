@@ -35,7 +35,7 @@ public class DeployService extends Service {
 	}
 
         public void init() throws IOException {
-		servers = Slime.getInstance().getConfig().getServerInfo();
+		servers = Slime.getConfig().getServerInfo();
 	}
 
         public void dispatch(Event e) throws IOException {
@@ -62,7 +62,13 @@ public class DeployService extends Service {
 	}
 
 	public void launchSlime() throws IOException, JSchException {
-		String command = "cd slime && touch touched11 && ./bin/launch_slime.sh -Dmaster.address=" + Network.getMyAddress() + "\n";
+		String distDir = Slime.getConfig().get(Config.ELEMENT_NAME_DIST);
+		String command = "cd " + distDir + " && " +
+				"mkdir -p logs && " + 
+				"java -D" + Config.PROPERTY_NAME_LAUNCHERADDR + "=" + Network.getMyAddress() +
+				" -cp $(find lib -name \"*.jar\" | tr '\n' ':')`ls dist/*`" +
+				" " + Slime.getConfig().get(Config.PROPERTY_NAME_MAINCLASS) + "\n";
+		LOG.debug("launching Slime remote with commands (" + command + ")");
 		executeCommand(command);
 	}
 
@@ -170,11 +176,26 @@ public class DeployService extends Service {
 		channel.disconnect();
 	}
 
-	public void deployServer(String address) {
-		Map<String, String> attr = Slime.getInstance().getConfig().getServerInfo().get(address);
+	private String readFile(String filename) {
+		String content = null;
+		File file = new File(filename); //for ex foo.txt
+		try {
+			FileReader reader = new FileReader(file);
+			char[] chars = new char[(int) file.length()];
+			reader.read(chars);
+			content = new String(chars);
+			reader.close();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		return content;
+	}
+
+	public void deployServer(final String address) {
+		Map<String, String> attr = Slime.getConfig().getServerInfo().get(address);
 
 		if (attr == null) {
-System.out.println("servInfo:" + Slime.getInstance().getConfig().getServerInfo());
+			LOG.debug("servInfo:" + Slime.getConfig().getServerInfo());
 			throw new RuntimeException("Illegal State");
 		}
 
@@ -182,6 +203,15 @@ System.out.println("servInfo:" + Slime.getInstance().getConfig().getServerInfo()
 		if (user == null) {
 			user = System.getProperty("user.name");
 		}
+		final String passwd = attr.get(Config.ATTR_NAME_PASSWD);
+		final String passphraseFile = attr.get(Config.ATTR_NAME_PASSPHRASEFILE);
+		String ppFromFile = null;
+		if (passphraseFile != null)
+			ppFromFile = readFile(passphraseFile);
+		if (ppFromFile == null)
+			ppFromFile = attr.get(Config.ATTR_NAME_PASSPHRASE);
+			
+		final String passphrase = ppFromFile;
 
 		try {
 			session = jsch.getSession(user, address, SSH_PORT);
@@ -189,27 +219,30 @@ System.out.println("servInfo:" + Slime.getInstance().getConfig().getServerInfo()
 			// username and password will be given via UserInfo interface.
 			session.setUserInfo(new UserInfo() {
 					public String getPassphrase()  {
-						return "";
+						return passphrase;
 					}
 					public String getPassword()  {
-						return "";
+						return passwd;
 					}
 					public boolean promptPassphrase(String message)  {
-						return true;
+						return passphrase != null;
 					}
 					public boolean promptPassword(String message)  {
-						return true;
+						return passwd != null;
 					}
 					public boolean promptYesNo(String message)  {
+						LOG.debug("JSCH questions (" + address + "): " + message);
+						LOG.debug("                answered Yes");
 						return true;
 					}
 					public void showMessage(String message)  {
+						LOG.debug("JSCH tells (" + address + "): " + message);
 					} 
 			});
 			session.connect();
 
-			String distDir = Slime.getInstance().getConfig().get(Config.ELEMENT_NAME_DIST);
-			String baseDirs = Slime.getInstance().getConfig().get(Config.ELEMENT_NAME_BASE);
+			String distDir = Slime.getConfig().get(Config.ELEMENT_NAME_DIST);
+			String baseDirs = Slime.getConfig().get(Config.ELEMENT_NAME_BASE);
 
 			makeRemoteDir(distDir);
 

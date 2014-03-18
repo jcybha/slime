@@ -27,7 +27,7 @@ import edu.columbia.slime.util.TimeUtil;
 
 public class UIService extends Service {
 
-	private static final URI BASE_URI = URI.create("http://128.59.14.28:8080/base/");
+	private static final URI BASE_URI = URI.create("http://localhost:8080/base/");
 	public static final String ROOT_PATH = "ui";
 
 	private HttpServer server = null;

@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.SortedSet;
 import java.util.TreeSet;
 import java.util.Set;
@@ -36,7 +37,7 @@ public class Slime implements EventListFeeder {
 
 	private static final Slime instance = new Slime();
 	private static final int DEFAULT_SLEEP_MILLIS = 500;
-	private static final int DEFAULT_LONG_SLEEP_MILLIS = 50000;
+	private static final int DEFAULT_LONG_SLEEP_MILLIS = 5000;
 	private static Config config = null;
 
 	protected volatile boolean stopRequest = false;
@@ -46,7 +47,7 @@ public class Slime implements EventListFeeder {
 	List<SocketEvent> sockets;
 	Queue<MessageEvent> messages;
 	SortedSet<TimerEvent> timers;
-	Map<Event, Service> eventTable;
+	private Map<Event, Service> eventTable;
 	PairList<SocketChannel, ByteBuffer> sendQueue;
 	PairList<Event, Service> dispatchQueue;
 	Map<String, Service> services;
@@ -63,7 +64,7 @@ public class Slime implements EventListFeeder {
 				}
 			});
 		messages = new LinkedList<MessageEvent>();
-		eventTable = new HashMap<Event, Service>();
+		eventTable = new ConcurrentHashMap<Event, Service>();
 		try {
 			selector = Selector.open();
 		} catch (IOException ioe) {
@@ -137,10 +138,10 @@ public class Slime implements EventListFeeder {
 				empty = sendQueue.isEmpty();
 			}	
 			try {
-				sc.write(bb);
-				LOG.debug("sent in replySocket()");
+				int sentBytes = sc.write(bb);
+				LOG.trace("sent " + sentBytes + " bytes in replySocket() to " + sc + " but bb has " + bb.remaining());
 			} catch (IOException ioe) {
-				LOG.error("write", ioe);
+				LOG.error("write in replySockets", ioe);
 			}
 		}
 	}
@@ -184,6 +185,8 @@ public class Slime implements EventListFeeder {
 				se.setReadyOps(sk.readyOps());
 
 				Service s = eventTable.get(se);
+				if (s == null) // already unregistered but selected => ignore
+					continue;
 				unregisterEvent(se);
 
 				synchronized (dispatchQueue) {
@@ -228,10 +231,12 @@ public class Slime implements EventListFeeder {
 			minTime = te.getTime();
 			while (minTime <= System.currentTimeMillis()) {
 				timers.remove(te);
-				//eventTable.get(te).dispatch(te);
-				synchronized (dispatchQueue) {
-					dispatchQueue.add(te, eventTable.get(te));
-					dispatchQueue.notify();
+
+				if (!(te.inDispatch() && !te.isOverlappable())) {
+					synchronized (dispatchQueue) {
+						dispatchQueue.add(te, eventTable.get(te));
+						dispatchQueue.notify();
+					}
 				}
 				if (te.getType() == TimerEvent.TYPE_PERIODIC_REL) {
 					te.advanceToNextPeriod();
@@ -264,11 +269,13 @@ public class Slime implements EventListFeeder {
 			s = dispatchQueue.getRight();
 			dispatchQueue.remove();
 		}
+		e.startDispatch();
 		try {
 			s.dispatch(e);
-		} catch (IOException ioe) {
-			LOG.error("Error while dispatching : ", ioe);
+		} catch (Exception ex) {
+			LOG.error("Error while dispatching : ", ex);
 		}
+		e.endDispatch();
 	}
 
 	public void start() {
@@ -316,16 +323,20 @@ public class Slime implements EventListFeeder {
 		while (i > 0) {
 			Thread slimeThread = new Thread() {
 				public void run() {
-					synchronized (threadCnt) {
-						threadCnt++;
+					try {
+						synchronized (threadCnt) {
+							threadCnt++;
+						}
+						while (!stopRequest) {
+							execute();
+						}
 					}
-					while (!stopRequest) {
-						execute();
+					finally {
+						synchronized (threadCnt) {
+							threadCnt--;
+						}
+						LOG.info("Thread " + Thread.currentThread() + " terminated");
 					}
-					synchronized (threadCnt) {
-						threadCnt--;
-					}
-					LOG.info("Thread " + Thread.currentThread() + " terminated");
 				}
 			};
 			slimeThread.start();
@@ -333,16 +344,20 @@ public class Slime implements EventListFeeder {
 		}
 		
 		while (!stopRequest) {
-			synchronized (runQueue) {
-				for (Runnable r : runQueue) {
-					r.run();
+			try {
+				synchronized (runQueue) {
+					for (Runnable r : runQueue) {
+						r.run();
+					}
+					runQueue.clear();
 				}
-				runQueue.clear();
+				long until = dispatchTimers();
+				dispatchMessages();
+				dispatchSockets(until);
+				replySockets();
+			} catch (Exception e) {
+				e.printStackTrace();
 			}
-			long until = dispatchTimers();
-			dispatchMessages();
-			dispatchSockets(until);
-			replySockets();
 		}
 
 		while (true) {
@@ -377,9 +392,14 @@ public class Slime implements EventListFeeder {
 	}
 
 	public void registerEvent(Event e, Service s) {
+		if (s == null && !(e instanceof MessageEvent))
+			throw new RuntimeException("Null service was registered for an event: " + e);
+
 		e.registerEvent(this, selector);
 
-		eventTable.put(e, s);
+		if (!(e instanceof MessageEvent)) {
+			eventTable.put(e, s);
+		}
 
 		selector.wakeup();
 	}

@@ -30,6 +30,8 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 	private static final String ATTR_NAME_PORT = "port";
 	private static final String ATTR_NAME_MASTERS = "masters";
 	private static final String ATTR_NAME_SOM = "slaveonmaster";
+
+	private static final int HEADER_LEN = 20;
 	private static final int MAGIC1 = 0x48031027;
 	private static final int MAGIC2 = 0x91785319;
 
@@ -45,7 +47,6 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 
 	int protocol_version = 0;
 
-	SocketEvent se;
 	ServerSocketChannel ssc;
 
 	List<String> masters = new ArrayList<String>();
@@ -87,18 +88,20 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 		protocol_version = version;
 	}
 
-	int port = 0;
+	private int internalPort = 0;
 
 	private final Queue<SocketChannel> slaveSockets = new LinkedList<SocketChannel>();
 	private final Queue<SocketChannel> masterSockets = new LinkedList<SocketChannel>();
 
 	private final void initMaster() throws IOException {
 		ssc = ServerSocketChannel.open();
-		ssc.socket().bind(new InetSocketAddress(port));
+		ssc.socket().bind(new InetSocketAddress(internalPort));
 		ssc.configureBlocking(false);
-		LOG.info("Created a [master] service'" + getName() + "' at port " + port);
 
-		se = new SocketEvent(ssc);
+		LOG.info("Created a [master] service '" + getName() + "' at port "
+			 + internalPort + " for slaves");
+
+		SocketEvent se = new SocketEvent(ssc);
 		register(se);
 
 		masterService.init();
@@ -114,7 +117,7 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 			for (SocketChannel sc : slaveSockets) {
 				sc.close();
 			}
-			masterSockets.clear();
+			slaveSockets.clear();
 		}
 	}
 
@@ -125,7 +128,7 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 
 		for (String master : masters) {
 			SocketChannel sc = SocketChannel.open();
-			sc.socket().connect(new InetSocketAddress(master, port));
+			sc.socket().connect(new InetSocketAddress(master, internalPort));
 			sc.configureBlocking(false);
 			sc.socket().setTcpNoDelay(true);
 
@@ -133,10 +136,10 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 				masterSockets.add(sc);
 			}
 
-			se = new SocketEvent(sc);
+			SocketEvent se = new SocketEvent(sc);
 			register(se);
 		}
-		LOG.info("Created a [slave] service '" + getName() + "' connected to masters " + masters + " through a port " + port);
+		LOG.info("Created a [slave] service '" + getName() + "' connected to masters " + masters + " through a port " + internalPort);
 
 		slaveService.init();
 	}
@@ -156,11 +159,11 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 
 	public final void init() throws IOException {
 		try {
-			if (getDefaultConfig() == null || getDefaultConfig().get(ATTR_NAME_PORT) == null) {
+			if (getDefaultConfig().get(ATTR_NAME_PORT) == null) {
 				LOG.error("Cannot find 'port' attribute for the service '" + getName());
 				throw new IOException("Cannot find 'port' attribute for the service '" + getName());
 			}
-			port = Integer.parseInt(getDefaultConfig().get(ATTR_NAME_PORT));
+			internalPort = Integer.parseInt(getDefaultConfig().get(ATTR_NAME_PORT));
 
 			if (getDefaultConfig().get(ATTR_NAME_MASTERS) != null) {
 				String mastersAttr = getDefaultConfig().get(ATTR_NAME_MASTERS);
@@ -232,23 +235,34 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 			sc.socket().setTcpNoDelay(true);
 			register(new SocketEvent(sc));
 
-			synchronized (slaveSockets) {
-				slaveSockets.add(sc);
+			if (!newConnection(ssc, sc)) {
+				synchronized (slaveSockets) {
+					slaveSockets.add(sc);
+				}
 			}
 
-			newConnection(sc);
-
-			LOG.info("Opened a new connection from " + sc.socket());
+			LOG.debug("Opened a new connection from " + sc.socket());
 		}
 		if ((se.getReadyOps() & SelectionKey.OP_READ) != 0) {
 			LOG.debug("Reading from a connection " + e);
-			readInternal((SocketChannel) se.getSocket());
+			try {
+				readInternal((SocketChannel) se.getSocket());
+			} catch (IOException ioe) {
+				LOG.info("Closing a connection " + e);
+				//SocketEvents are already unregisterd when dispatched
+				//unregister(se);
+				return;
+			}
 		}
 		register(se);
 	}
 
-	public final void newConnection(SocketChannel sc) throws IOException {
-		masterService.newConnection(sc);
+	public final boolean newConnection(ServerSocketChannel ssc, SocketChannel sc) throws IOException {
+		return masterService.newConnection(ssc, sc);
+	}
+
+	public final void closedConnection(SocketChannel sc) throws IOException {
+		masterService.closedConnection(sc);
 	}
 
 	public final void dispatchMessage(MessageEvent me) throws IOException {
@@ -303,10 +317,14 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 		int i;
 		int readBytes = 0;
 		for (i = 0; i < READ_RETRY_CNT; i++) {
-			readBytes += sc.read(bb);
+			int bytes = sc.read(bb);
+			if (bytes < 0) {
+				throw new IOException("read returned -1");
+			}
+			readBytes += bytes;
 			LOG.trace("readBytes:" + readBytes + " bb.pos: " + bb.position() + " bb.limit: " + bb.limit() + " rem: " + bb.remaining());
 			if (bb.remaining() == 0) {
-//				bb.flip();
+				bb.flip();
 				return;
 			}
 			try {
@@ -317,20 +335,20 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 	}
 
 	private final void readInternal(SocketChannel sc) throws IOException {
-		final ByteBuffer headerBuffer = ByteBuffer.wrap(new byte[20]);
+		final ByteBuffer headerBuffer = ByteBuffer.allocate(HEADER_LEN);
 		ByteBuffer dataByteBuffer = null;
 		ObjectInputStream ois;
 
 		headerBuffer.order(ByteOrder.LITTLE_ENDIAN);
 
 		readFully(sc, headerBuffer);
-		int magic1 = headerBuffer.getInt(0);
-		int magic2 = headerBuffer.getInt(4);
-		int version = headerBuffer.getInt(8);
-		int isObject = headerBuffer.getInt(12);
-		int length = headerBuffer.getInt(16);
+		int magic1 = headerBuffer.getInt();
+		int magic2 = headerBuffer.getInt();
+		int version = headerBuffer.getInt();
+		int isObject = headerBuffer.getInt();
+		int length = headerBuffer.getInt();
 
-		LOG.trace("read header (magic:" + magic1 + ":" + magic2 + " object:" + isObject + " len:" + length + ").");
+		LOG.debug("read header (magic:" + magic1 + ":" + magic2 + " object:" + isObject + " len:" + length + ").");
 
 		if (magic1 != MAGIC1 || magic2 != MAGIC2)
 			throw new RuntimeException("Illegal MAGIC (" + magic1 + ":" + magic2 + ")");
@@ -342,58 +360,64 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 		dataByteBuffer.order(ByteOrder.LITTLE_ENDIAN);
 
 		readFully(sc, dataByteBuffer);
-		if (dataByteBuffer.remaining() != 0)
-			throw new RuntimeException("Illegal Packet");
 
 		if (isObject != 0) {
 			byte[] array = dataByteBuffer.array();
 			ois = new ObjectInputStream(new ByteArrayInputStream(array));
 			try {
-				read(sc, (Serializable) ois.readObject());
+				Serializable s = (Serializable) ois.readObject();
+				read(sc, s);
 			} catch (ClassNotFoundException cnfe) {
 				throw new RuntimeException(cnfe);
 			}
 			ois.close();
 		}
-		else
+		else {
 			read(sc, dataByteBuffer);
+		}
 	}
 
 	public final void writeAsync(SocketChannel sc, Serializable obj) throws IOException {
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		int i;
-		for (i = 0; i < 12; i++)
+		for (i = 0; i < HEADER_LEN; i++)
 			baos.write(0);
 		ObjectOutputStream oos = new ObjectOutputStream(baos);
+
+		if (obj == null)
+			throw new IOException("obj has null");
+
 		oos.writeObject(obj);
 		oos.close();
-		final ByteBuffer wrap = ByteBuffer.wrap(baos.toByteArray());
+		byte[] resultBytes = baos.toByteArray();
+		final ByteBuffer wrap = ByteBuffer.wrap(resultBytes);
 		wrap.order(ByteOrder.LITTLE_ENDIAN);
 
 		wrap.putInt(0, MAGIC1);
 		wrap.putInt(4, MAGIC2);
 		wrap.putInt(8, protocol_version);
 		wrap.putInt(12, 1);
-		wrap.putInt(16, baos.size() - 12);
+		wrap.putInt(16, baos.size() - HEADER_LEN);
 
 		Slime.getInstance().enqueueReply(sc, wrap);
 	}
 
 	public final void writeAsync(SocketChannel sc, ByteBuffer bb) throws IOException {
-		final ByteBuffer header = ByteBuffer.allocate(12);
+		final ByteBuffer header = ByteBuffer.allocate(HEADER_LEN + bb.remaining());
 		header.order(ByteOrder.LITTLE_ENDIAN);
 
 		header.putInt(MAGIC1);
 		header.putInt(MAGIC2);
 		header.putInt(protocol_version);
 		header.putInt(0);
-		header.putInt(bb.position());
+		header.putInt(bb.remaining());
 
 		if (bb.order() != ByteOrder.LITTLE_ENDIAN)
 			throw new IOException("Unmatched endian");
 
+		header.put(bb);
+		header.flip();
 		Slime.getInstance().enqueueReply(sc, header);
-		Slime.getInstance().enqueueReply(sc, bb);
 	}
 
 	public final int broadcastToMastersAsync(Serializable obj) throws IOException {
@@ -474,13 +498,19 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 
 	public final void writeObjectMapAsync(Map<SocketChannel, Serializable> map) throws IOException {
 		for (SocketChannel sc : map.keySet()) {
-			writeAsync(sc, map.get(sc));
+			Serializable s = map.get(sc);
+			if (s == null)
+				continue;
+			writeAsync(sc, s);
 		}
 	}
 
 	public final void writeBufferMapAsync(Map<SocketChannel, ByteBuffer> map) throws IOException {
 		for (SocketChannel sc : map.keySet()) {
-			writeAsync(sc, map.get(sc));
+			ByteBuffer bb = map.get(sc);
+			if (bb == null)
+				continue;
+			writeAsync(sc, bb);
 		}
 	}
 

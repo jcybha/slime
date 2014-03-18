@@ -8,12 +8,6 @@
    <plugins>plugins</plugins>
   </directories>
 
-  <!--servers>
-   <server>128.59.14.28</server>
-   <server threads="2" user="subcast" passwd="....">128.59.14.24</server>
-   <server threads="2" user="subcast" passwd="....">128.59.14.27</server>
-  </servers-->
-
   <services>
    <service name="deploy">
     <port>2033</port>

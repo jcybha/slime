@@ -9,4 +9,8 @@ public interface ServiceConfigParser {
 	public void endElement(String uri, String localName, String qName) throws SAXException;
 
 	public void characters(char ch[], int start, int length);
+
+	public Object get(String name);
+
+	public String getString(String name);
 }

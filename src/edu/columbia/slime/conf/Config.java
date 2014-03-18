@@ -2,6 +2,7 @@ package edu.columbia.slime.conf;
 
 import java.io.InputStream;
 import java.io.FileInputStream;
+import java.io.File;
 import java.io.IOException;
 import java.util.Stack;
 import java.util.Map;
@@ -25,7 +26,7 @@ import edu.columbia.slime.service.Service;
 public class Config extends HashMap<String, Object> {
 	public static final Log LOG = LogFactory.getLog(Slime.class);
 
-	private static final String configPath = "conf/slime.xml";
+	private static final String configPath = "conf" + File.separator + "slime.xml";
 
 	public static final String ELEMENT_NAME_SERVER = "server";
 	public static final String ELEMENT_NAME_SERVICE = "service";
@@ -186,7 +187,7 @@ System.out.println("Converting (" + attr.getQName(i) + ":" +  attr.getValue(i));
 	private void init(String configPath, Class klass) {
 		InputStream is = null;
 		if (klass != null)
-			is = klass.getResourceAsStream("/" + configPath);
+			is = klass.getResourceAsStream(File.separator + configPath);
 
 		if (is == null) {
 			try {
