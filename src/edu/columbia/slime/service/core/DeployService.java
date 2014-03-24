@@ -41,7 +41,7 @@ public class DeployService extends Service {
         public void dispatch(Event e) throws IOException {
 		if (e instanceof MessageEvent) {
 			MessageEvent me = (MessageEvent) e;
-			if (me.getMessage().equals("deployAll")) {
+			if (me.getMessage().equals("deployAll") && servers != null) {
 				LOG.info("'deploy' service: Got a 'deployAll' message");
 				for (String server : servers.keySet()) {
 					if (Network.checkIfMyAddress(server))
