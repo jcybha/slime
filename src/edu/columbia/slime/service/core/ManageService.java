@@ -35,7 +35,7 @@ public class ManageService extends MasterSlaveService {
 		TimerEvent pingTimer;
 
 		public void init() throws IOException {
-			pingTimer = new MasterTimerEvent(TimerEvent.TYPE_PERIODIC_REL, MASTER_PING_PERIOD_MS);
+			pingTimer = new MasterTimerEvent("Ping Timer", TimerEvent.TYPE_PERIODIC_REL, MASTER_PING_PERIOD_MS);
 
 			register(pingTimer);
 		}

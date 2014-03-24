@@ -46,8 +46,10 @@ public class SocketEvent extends Event {
 					sc.configureBlocking(false);
 					sc.register(selector, (sc.validOps() & ~(SelectionKey.OP_WRITE | SelectionKey.OP_CONNECT)), se);
 				} catch (ClosedChannelException cce) {
+					c.remove(se);
 					LOG.info("CCE: " + cce);
 				} catch (Exception e) {
+					c.remove(se);
 					LOG.info("Exception: " + e);
 					e.printStackTrace();
 				}

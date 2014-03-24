@@ -33,7 +33,7 @@ import edu.columbia.slime.util.ClassUtils;
 import edu.columbia.slime.util.PairList;
 
 public class Slime implements EventListFeeder {
-        public static final Log LOG = LogFactory.getLog(Slime.class);
+	public static final Log LOG = LogFactory.getLog(Slime.class);
 
 	private static final Slime instance = new Slime();
 	private static final int DEFAULT_SLEEP_MILLIS = 500;
@@ -141,7 +141,7 @@ public class Slime implements EventListFeeder {
 				int sentBytes = sc.write(bb);
 				LOG.trace("sent " + sentBytes + " bytes in replySocket() to " + sc + " but bb has " + bb.remaining());
 			} catch (IOException ioe) {
-				LOG.error("write in replySockets", ioe);
+				LOG.error("write in replySockets : " + sc + " due to " + ioe);
 			}
 		}
 	}

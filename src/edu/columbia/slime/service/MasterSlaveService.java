@@ -248,7 +248,8 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 			try {
 				readInternal((SocketChannel) se.getSocket());
 			} catch (IOException ioe) {
-				LOG.info("Closing a connection " + e);
+				LOG.info("Closing a connection " + se.getSocket() + " due to " + ioe);
+				se.getSocket().close();
 				//SocketEvents are already unregisterd when dispatched
 				//unregister(se);
 				return;
@@ -348,7 +349,6 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 		int isObject = headerBuffer.getInt();
 		int length = headerBuffer.getInt();
 
-		LOG.debug("read header (magic:" + magic1 + ":" + magic2 + " object:" + isObject + " len:" + length + ").");
 
 		if (magic1 != MAGIC1 || magic2 != MAGIC2)
 			throw new RuntimeException("Illegal MAGIC (" + magic1 + ":" + magic2 + ")");
@@ -414,7 +414,6 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 
 		if (bb.order() != ByteOrder.LITTLE_ENDIAN)
 			throw new IOException("Unmatched endian");
-
 		header.put(bb);
 		header.flip();
 		Slime.getInstance().enqueueReply(sc, header);
