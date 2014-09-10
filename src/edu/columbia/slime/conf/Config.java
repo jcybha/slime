@@ -187,7 +187,7 @@ System.out.println("Converting (" + attr.getQName(i) + ":" +  attr.getValue(i));
 	private void init(String configPath, Class klass) {
 		InputStream is = null;
 		if (klass != null)
-			is = klass.getResourceAsStream(File.separator + configPath);
+			is = klass.getResourceAsStream("/" + configPath);
 
 		if (is == null) {
 			try {
