@@ -76,7 +76,7 @@ public class Slime implements EventListFeeder {
 		runQueue = new ArrayList<Runnable>();
 
 		/* registering default services */
-		registerService(new UIService());
+//		registerService(new UIService());
 		registerService(new DeployService());
 		registerService(new ManageService());
 	}
