@@ -8,12 +8,13 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.Serializable;
 import java.util.Queue;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.ArrayList;
+import java.util.LinkedList;
 import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.SocketChannel;
@@ -24,7 +25,9 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
 import edu.columbia.slime.Slime;
+import edu.columbia.slime.proto.SlavePingProtocol;
 import edu.columbia.slime.util.Network;
+import edu.columbia.slime.util.ConditionalRunnable;
 
 public abstract class MasterSlaveService extends Service implements NetworkServiceInterface {
 	private static final String ATTR_NAME_PORT = "port";
@@ -90,8 +93,12 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 
 	private int internalPort = 0;
 
-	private final Queue<SocketChannel> slaveSockets = new LinkedList<SocketChannel>();
-	private final Queue<SocketChannel> masterSockets = new LinkedList<SocketChannel>();
+	private final Map<SocketChannel, SocketEvent> slaveSockets = new HashMap<SocketChannel, SocketEvent>();
+	private final Map<SocketChannel, SocketEvent> masterSockets = new HashMap<SocketChannel, SocketEvent>();
+
+	private TimerEvent slavePingTimer = null;
+
+	private SlavePingProtocol slavePingProtocol = new SlavePingProtocol();
 
 	private final void initMaster() throws IOException {
 		ssc = ServerSocketChannel.open();
@@ -114,7 +121,7 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 
 		ssc.close();
 		synchronized (slaveSockets) {
-			for (SocketChannel sc : slaveSockets) {
+			for (SocketChannel sc : slaveSockets.keySet()) {
 				sc.close();
 			}
 			slaveSockets.clear();
@@ -132,28 +139,33 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 			sc.configureBlocking(false);
 			sc.socket().setTcpNoDelay(true);
 
-			synchronized (masterSockets) {
-				masterSockets.add(sc);
-			}
-
 			SocketEvent se = new SocketEvent(sc);
+			synchronized (masterSockets) {
+				masterSockets.put(sc, se);
+			}
 			register(se);
 		}
+
+		slavePingTimer = new SlaveTimerEvent(TimerEvent.TYPE_PERIODIC_REL, 3000);
+		register(slavePingTimer);
+
 		LOG.info("Created a [slave] service '" + getName() + "' connected to masters " + masters + " through a port " + internalPort);
 
 		slaveService.init();
 	}
 
 	private final void closeSlave() throws IOException {
+		unregister(slavePingTimer);
+
 		slaveService.close();
 
 //		cancel(se);
 
 		synchronized (masterSockets) {
-			for (SocketChannel sc : masterSockets) {
+			for (SocketChannel sc : masterSockets.keySet()) {
+				unregister(masterSockets.remove(sc));
 				sc.close();
 			}
-			masterSockets.clear();
 		}
 	}
 
@@ -233,11 +245,12 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 			ServerSocketChannel ssc = (ServerSocketChannel) se.getSocket();
 			SocketChannel sc = ssc.accept();
 			sc.socket().setTcpNoDelay(true);
-			register(new SocketEvent(sc));
 
 			if (!newConnection(ssc, sc)) {
+				SocketEvent cse = new SocketEvent(sc);
+				register(cse);
 				synchronized (slaveSockets) {
-					slaveSockets.add(sc);
+					slaveSockets.put(sc, cse);
 				}
 			}
 
@@ -245,11 +258,33 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 		}
 		if ((se.getReadyOps() & SelectionKey.OP_READ) != 0) {
 			LOG.debug("Reading from a connection " + e);
+			SocketChannel sc = (SocketChannel) se.getSocket();
 			try {
-				readInternal((SocketChannel) se.getSocket());
+				readInternal(sc);
 			} catch (IOException ioe) {
-				LOG.info("Closing a connection " + se.getSocket() + " due to " + ioe);
-				se.getSocket().close();
+				SocketAddress addr = sc.socket().getRemoteSocketAddress();
+				LOG.info("Closing a connection " + sc + " due to " + ioe);
+				sc.close();
+				synchronized (masterSockets) {
+					if (masterSockets.remove(sc) != null) {
+						sc = SocketChannel.open();
+						sc.socket().connect(addr);
+						sc.configureBlocking(false);
+						sc.socket().setTcpNoDelay(true);
+						se = new SocketEvent(sc);
+						masterSockets.put(sc, se);
+						register(se);
+						LOG.info("Reconnected to " + sc);
+
+						return;
+					}
+				}
+
+				synchronized (slaveSockets) {
+					if (slaveSockets.remove(sc) == null) {
+						closedConnection(sc);
+					}
+				}
 				//SocketEvents are already unregisterd when dispatched
 				//unregister(se);
 				return;
@@ -282,6 +317,10 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 			masterService.dispatchTimer(te);
 		}
 		else if (te instanceof SlaveTimerEvent) {
+			if (te == slavePingTimer) {
+				broadcastToMastersAsync(slavePingProtocol);
+				return;
+			}
 			slaveService.dispatchTimer(te);
 		}
 		else
@@ -291,7 +330,7 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 	public final void read(SocketChannel sc, Serializable obj) throws IOException {
 		boolean toMaster;
 		synchronized (masterSockets) {
-			toMaster = masterSockets.contains(sc);
+			toMaster = masterSockets.containsKey(sc);
 		}
 		if (toMaster) {
 			slaveService.read(sc, obj);
@@ -304,7 +343,7 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 	public final void read(SocketChannel sc, ByteBuffer bb) throws IOException {
 		boolean toMaster;
 		synchronized (masterSockets) {
-			toMaster = masterSockets.contains(sc);
+			toMaster = masterSockets.containsKey(sc);
 		}
 		if (toMaster) {
 			slaveService.read(sc, bb);
@@ -366,7 +405,9 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 			ois = new ObjectInputStream(new ByteArrayInputStream(array));
 			try {
 				Serializable s = (Serializable) ois.readObject();
-				read(sc, s);
+				if (!(s instanceof SlavePingProtocol)) {
+					read(sc, s);
+				}
 			} catch (ClassNotFoundException cnfe) {
 				throw new RuntimeException(cnfe);
 			}
@@ -378,6 +419,10 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 	}
 
 	public final void writeAsync(SocketChannel sc, Serializable obj) throws IOException {
+		writeAsync(sc, obj, null);
+	}
+
+	public final void writeAsync(SocketChannel sc, Serializable obj, ConditionalRunnable cr) throws IOException {
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		int i;
 		for (i = 0; i < HEADER_LEN; i++)
@@ -399,10 +444,14 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 		wrap.putInt(12, 1);
 		wrap.putInt(16, baos.size() - HEADER_LEN);
 
-		Slime.getInstance().enqueueReply(sc, wrap);
+		Slime.getInstance().enqueueReply(sc, wrap, cr);
 	}
 
 	public final void writeAsync(SocketChannel sc, ByteBuffer bb) throws IOException {
+		writeAsync(sc, bb, null);
+	}
+
+	public final void writeAsync(SocketChannel sc, ByteBuffer bb, ConditionalRunnable cr) throws IOException {
 		final ByteBuffer header = ByteBuffer.allocate(HEADER_LEN + bb.remaining());
 		header.order(ByteOrder.LITTLE_ENDIAN);
 
@@ -416,7 +465,7 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 			throw new IOException("Unmatched endian");
 		header.put(bb);
 		header.flip();
-		Slime.getInstance().enqueueReply(sc, header);
+		Slime.getInstance().enqueueReply(sc, header, cr);
 	}
 
 	public final int broadcastToMastersAsync(Serializable obj) throws IOException {
@@ -427,12 +476,57 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 		return broadcastAsync(slaveSockets, obj);
 	}
 
-	public final int broadcastAsync(Queue<SocketChannel> sockets, Serializable obj) throws IOException {
+	public final int broadcastAsync(final Map<SocketChannel, SocketEvent> sockets, Serializable obj) throws IOException {
 		int i = 0;
 		synchronized (sockets) {
-			for (SocketChannel sc : sockets) {
-				i++;
-				writeAsync(sc, obj);
+			for (final SocketChannel sc : sockets.keySet()) {
+				final SocketAddress addr = sc.socket().getRemoteSocketAddress();
+				if (addr == null)
+					throw new IOException("Cannot obtain remote address: compare to the masters list.");
+
+				ConditionalRunnable cr = new ConditionalRunnable() {
+					public void run(boolean cond) {
+
+						// Failed to send
+						if (!cond) {
+							try {
+								sc.close();
+								closedConnection(sc);
+
+								SocketEvent se;
+								synchronized (sockets) {
+									se = sockets.remove(sc);
+								}
+								unregister(se);
+								LOG.info("Disconnected after a write error to " + addr);
+
+								// if the disconnected socket was from a master, try reconnect
+								if (sockets == masterSockets) {
+
+									SocketChannel sc = SocketChannel.open();
+									sc.socket().connect(addr);
+									sc.configureBlocking(false);
+									sc.socket().setTcpNoDelay(true);
+									se = new SocketEvent(sc);
+									synchronized (masterSockets) {
+										masterSockets.put(sc, se);
+									}
+									register(se);
+									LOG.info("Reconnected to the master: " + sc);
+								}
+							} catch (IOException ioe) {
+								ioe.printStackTrace();
+							}
+						}
+					}
+				};
+
+				try {
+					writeAsync(sc, obj, cr);
+					i++;
+				} catch (IOException ioe) {
+				}
+
 			}
 		}
 		return i;
@@ -446,12 +540,54 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 		return broadcastAsync(slaveSockets, bb);
 	}
 
-	public final int broadcastAsync(Queue<SocketChannel> sockets, ByteBuffer bb) throws IOException {
+	public final int broadcastAsync(final Map<SocketChannel, SocketEvent> sockets, ByteBuffer bb) throws IOException {
 		int i = 0;
 		synchronized (sockets) {
-			for (SocketChannel sc : sockets) {
-				i++;
-				writeAsync(sc, bb);
+			for (final SocketChannel sc : sockets.keySet()) {
+				final SocketAddress addr = sc.socket().getRemoteSocketAddress();
+				if (addr == null)
+					throw new IOException("Cannot obtain remote address: compare to the masters list.");
+
+				ConditionalRunnable cr = new ConditionalRunnable() {
+					public void run(boolean cond) {
+						// Failed to send
+						if (!cond) {
+							try {
+								sc.close();
+								closedConnection(sc);
+
+								SocketEvent se;
+								synchronized (sockets) {
+									se = sockets.remove(sc);
+								}
+								unregister(se);
+
+								// if the disconnected socket was from a master, try reconnect
+								if (sockets == masterSockets) {
+									LOG.info("Reconnecting to the master: " + addr);
+									SocketChannel sc = SocketChannel.open();
+									sc.socket().connect(addr);
+									sc.configureBlocking(false);
+									sc.socket().setTcpNoDelay(true);
+									se = new SocketEvent(sc);
+									synchronized (masterSockets) {
+										masterSockets.put(sc, se);
+									}
+									register(se);
+								}
+							} catch (IOException ioe) {
+								ioe.printStackTrace();
+							}
+						}
+					}
+				};
+
+				try {
+					writeAsync(sc, bb, cr);
+					i++;
+				} catch (IOException ioe) {
+				}
+
 			}
 		}
 		return i;
@@ -465,11 +601,11 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 		return allocateObjectMap(slaveSockets);
 	}
 
-	public final Map<SocketChannel, Serializable> allocateObjectMap(Queue<SocketChannel> sockets) {
+	public final Map<SocketChannel, Serializable> allocateObjectMap(Map<SocketChannel, SocketEvent> sockets) {
 		Map<SocketChannel, Serializable> map = new HashMap<SocketChannel, Serializable>();
 		
 		synchronized (sockets) {
-			for (SocketChannel sc : sockets) {
+			for (SocketChannel sc : sockets.keySet()) {
 				map.put(sc, null);
 			}
 		}
@@ -484,11 +620,11 @@ public abstract class MasterSlaveService extends Service implements NetworkServi
 		return allocateBufferMap(slaveSockets);
 	}
 
-	public final Map<SocketChannel, ByteBuffer> allocateBufferMap(Queue<SocketChannel> sockets) {
+	public final Map<SocketChannel, ByteBuffer> allocateBufferMap(Map<SocketChannel, SocketEvent> sockets) {
 		Map<SocketChannel, ByteBuffer> map = new HashMap<SocketChannel, ByteBuffer>();
 		
 		synchronized (sockets) {
-			for (SocketChannel sc : sockets) {
+			for (SocketChannel sc : sockets.keySet()) {
 				map.put(sc, null);
 			}
 		}

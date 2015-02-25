@@ -31,6 +31,8 @@ import edu.columbia.slime.proto.*;
 import edu.columbia.slime.conf.Config;
 import edu.columbia.slime.util.ClassUtils;
 import edu.columbia.slime.util.PairList;
+import edu.columbia.slime.util.TripleList;
+import edu.columbia.slime.util.ConditionalRunnable;
 
 public class Slime implements EventListFeeder {
 	public static final Log LOG = LogFactory.getLog(Slime.class);
@@ -48,7 +50,7 @@ public class Slime implements EventListFeeder {
 	Queue<MessageEvent> messages;
 	SortedSet<TimerEvent> timers;
 	private Map<Event, Service> eventTable;
-	PairList<SocketChannel, ByteBuffer> sendQueue;
+	TripleList<SocketChannel, ByteBuffer, ConditionalRunnable> sendQueue;
 	PairList<Event, Service> dispatchQueue;
 	Map<String, Service> services;
 	List<Runnable> runQueue;
@@ -72,7 +74,7 @@ public class Slime implements EventListFeeder {
 
 		dispatchQueue = new PairList<Event, Service>();
 		services = new HashMap<String, Service>();
-		sendQueue = new PairList<SocketChannel, ByteBuffer>();
+		sendQueue = new TripleList<SocketChannel, ByteBuffer, ConditionalRunnable>();
 		runQueue = new ArrayList<Runnable>();
 
 		/* registering default services */
@@ -127,21 +129,30 @@ public class Slime implements EventListFeeder {
 		while (!empty) {
 			SocketChannel sc;
 			ByteBuffer bb;
+			ConditionalRunnable cr;
 
 			synchronized (sendQueue) {
 				empty = sendQueue.isEmpty();
 				if (empty)
 					return;
 				sc = sendQueue.getLeft();
-				bb = sendQueue.getRight();
+				bb = sendQueue.getMiddle();
+				cr = sendQueue.getRight();
 				sendQueue.remove();
 				empty = sendQueue.isEmpty();
 			}	
 			try {
-				int sentBytes = sc.write(bb);
-				LOG.trace("sent " + sentBytes + " bytes in replySocket() to " + sc + " but bb has " + bb.remaining());
+				while (bb.remaining() > 0) {
+					int sentBytes = sc.write(bb);
+					LOG.trace("sent " + sentBytes + " bytes in replySocket() to " + sc + " but bb has " + bb.remaining());
+				}
+				if (cr != null)
+					cr.run(true);
 			} catch (IOException ioe) {
 				LOG.error("write in replySockets : " + sc + " due to " + ioe);
+				if (cr != null)
+					cr.run(false);
+				return;
 			}
 		}
 	}
@@ -153,9 +164,9 @@ public class Slime implements EventListFeeder {
 		selector.wakeup();
 	}
 
-	public void enqueueReply(SocketChannel sc, ByteBuffer bb) {
+	public void enqueueReply(SocketChannel sc, ByteBuffer bb, ConditionalRunnable cr) {
 		synchronized (sendQueue) {
-			sendQueue.add(sc, bb);
+			sendQueue.add(sc, bb, cr);
 		}
 		selector.wakeup();
 	}

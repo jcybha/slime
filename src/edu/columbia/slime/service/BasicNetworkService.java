@@ -60,13 +60,21 @@ public abstract class BasicNetworkService extends Service {
 			sc.socket().setTcpNoDelay(true);
 			clientSockets.add(sc);
 			register(new SocketEvent(sc));
-			LOG.info("Opened a new connection from " + sc.socket());
-
 			newConnection(sc);
+
+			LOG.info("Opened a new connection from " + sc.socket());
 		}
 		if ((se.getReadyOps() & SelectionKey.OP_READ) != 0) {
 			LOG.debug("Reading from a connection " + e);
-			read((SocketChannel) se.getSocket());
+			try {
+				read((SocketChannel) se.getSocket());
+			} catch (IOException ioe) {
+				clientSockets.remove(sc);
+				closedConnection(sc);
+
+				LOG.info("Closed a connection to " + sc.socket() + " due to " + ioe);
+				throw ioe;
+			}
 		}
 		register(se);
 	}
@@ -79,6 +87,9 @@ public abstract class BasicNetworkService extends Service {
 
 	public boolean newConnection(SocketChannel sc) throws IOException {
 		return false;
+	}
+
+	public void closedConnection(SocketChannel sc) throws IOException {
 	}
 
 	public abstract void read(SocketChannel sc) throws IOException;
